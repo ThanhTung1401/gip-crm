@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: gip-crm
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: crm-data
+      mountPath: /var/data/gip-crm
+      sizeGB: 1
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: DATA_DIR
+        value: /var/data/gip-crm/data
+      - key: BACKUP_DIR
+        value: /var/data/gip-crm/backups
+      - key: ENABLE_LOCAL_BACKUP
+        value: "true"
+      - key: ENABLE_DRIVE_UPLOAD
+        value: "false"
+      - key: GOOGLE_DRIVE_FOLDER_ID
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
