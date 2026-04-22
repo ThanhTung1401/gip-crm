@@ -3,7 +3,18 @@ import * as XLSX from "xlsx";
 import gipLogo from "../GIP - Logo-01.png";
 
 const STAGES = ["Data Thô", "Freeze", "Cold", "Warm", "Hot", "Win"];
-const PLATFORMS = ["Shopee", "Lazada", "TikTok Shop", "Website", "Khác"];
+const PLATFORMS = ["Facebook", "Shopee", "Tiktok", "Lazada", "Khác"];
+const PLATFORM_ALIASES = {
+  facebook: "Facebook",
+  fb: "Facebook",
+  shopee: "Shopee",
+  tiktok: "Tiktok",
+  tiktokshop: "Tiktok",
+  lazada: "Lazada",
+  khac: "Khác",
+  other: "Khác",
+  website: "Khác",
+};
 const DEAL_STATUS_OPTIONS = [
   "New Lead",
   "Interested",
@@ -276,7 +287,7 @@ const normalizeDeals = (rawDeals) =>
   Array.isArray(rawDeals)
     ? rawDeals.map((deal) => ({
         ...deal,
-        platform: Array.isArray(deal.platform) ? deal.platform : deal.platform ? [deal.platform] : [],
+        platform: normalizePlatformList(Array.isArray(deal.platform) ? deal.platform : deal.platform ? [deal.platform] : []),
         deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "",
         notes: parseNotes(deal.notes),
         stageHistory: Array.isArray(deal.stageHistory) ? deal.stageHistory : [],
@@ -489,6 +500,17 @@ const normalizeSearchText = (value) =>
     .trim();
 
 const normalizePhoneText = (value) => String(value || "").replace(/\D/g, "");
+const normalizePlatformKey = (value) =>
+  String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+const normalizePlatformValue = (value) => PLATFORM_ALIASES[normalizePlatformKey(value)] || "";
+const normalizePlatformList = (values) => {
+  const source = Array.isArray(values) ? values : [values];
+  return [...new Set(source.map((value) => normalizePlatformValue(value)).filter(Boolean))];
+};
 
 const parseExcelDateToISO = (value) => {
   if (!value && value !== 0) return "";
@@ -552,10 +574,12 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
     const rawPic = String(getImportValue(normalizedRow, importHeaderAliases.pic) || preset.pic || "").trim().toUpperCase();
     const pic = ownerMode || (buildAllOwnerCodes(ownerCodes).includes(rawPic) ? rawPic : rawPic);
     const rawPlatform = getImportValue(normalizedRow, importHeaderAliases.platform);
-    const platform = String(rawPlatform || "")
-      .split(/[,;|]/)
-      .map((item) => item.trim())
-      .filter(Boolean);
+    const platform = normalizePlatformList(
+      String(rawPlatform || "")
+        .split(/[,;|]/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    );
     const noteText = String(getImportValue(normalizedRow, importHeaderAliases.notes) || "").trim();
     const dataInputDate = parseExcelDateToISO(getImportValue(normalizedRow, importHeaderAliases.dataInputDate)) || now;
     const lastMeeting = parseExcelDateToISO(getImportValue(normalizedRow, importHeaderAliases.lastMeeting)) || "";
@@ -589,7 +613,7 @@ const exportImportTemplate = () => {
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet([
     ["Brand", "Contact", "Phone", "Platform", "Stage", "Deal Status", "PIC", "Source", "Value", "MaKH", "BangGia", "DataInputDate", "LastMeeting", "Notes"],
-    ["Cafune", "Linh", "0901234567", "Shopee, Website", "Data Thô", "New Lead", "GIP01", "Facebook", "50000000", "", "", "14/04/2026", "", "Khách mới, cần gọi tư vấn"],
+    ["Cafune", "Linh", "0901234567", "Facebook, Shopee", "Data Thô", "New Lead", "GIP01", "Facebook", "50000000", "", "", "14/04/2026", "", "Khách mới, cần gọi tư vấn"],
   ]);
   ws["!cols"] = [18, 16, 14, 20, 12, 20, 10, 16, 14, 12, 12, 14, 14, 30].map((w) => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, "Mau Import");
@@ -598,7 +622,7 @@ const exportImportTemplate = () => {
     ["Huong dan"],
     ["1. Giữ nguyên hàng tiêu đề ở sheet Mẫu Import"],
     ["2. Date dùng dd/mm/yyyy hoặc yyyy-mm-dd"],
-    ["3. Platform có thể nhập nhiều giá trị, ngăn cách bằng dấu phẩy"],
+    [`3. Platform hợp lệ: ${PLATFORMS.join(", ")}. Có thể nhập nhiều giá trị, ngăn cách bằng dấu phẩy`],
     ["4. Stage hợp lệ: Data Thô, Freeze, Cold, Warm, Hot, Win"],
     [`5. Deal Status hợp lệ: ${DEAL_STATUS_OPTIONS.join(", ")}`],
     ["6. Nếu import từ link owner, PIC sẽ tự khóa theo owner đó"],

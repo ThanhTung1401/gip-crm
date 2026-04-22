@@ -31,6 +31,18 @@ const DEAL_STATUS_OPTIONS = [
   "Wrong Info",
   "Can't Contact",
 ];
+const PLATFORMS = ["Facebook", "Shopee", "Tiktok", "Lazada", "Khác"];
+const PLATFORM_ALIASES = {
+  facebook: "Facebook",
+  fb: "Facebook",
+  shopee: "Shopee",
+  tiktok: "Tiktok",
+  tiktokshop: "Tiktok",
+  lazada: "Lazada",
+  khac: "Khác",
+  other: "Khác",
+  website: "Khác",
+};
 const SLA_DAYS = { "Data Thô": 15, Freeze: 10, Cold: 7, Warm: 5, Hot: 3 };
 const MEETING_CADENCE = { Warm: 21, Hot: 21, Win: 30 };
 const FOLLOWUP_HOURS_DEFAULT = { "Data Thô": 100, Freeze: 72, Cold: 48, Warm: 36, Hot: 24, Win: 0 };
@@ -183,6 +195,23 @@ function validateBackupPayload(payload) {
 
 function isValidDealStatus(value) {
   return value === null || value === undefined || value === "" || DEAL_STATUS_OPTIONS.includes(value);
+}
+
+function normalizePlatformKey(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function normalizePlatformValue(value) {
+  return PLATFORM_ALIASES[normalizePlatformKey(value)] || "";
+}
+
+function normalizePlatformList(values) {
+  const source = Array.isArray(values) ? values : [values];
+  return [...new Set(source.map((value) => normalizePlatformValue(value)).filter(Boolean))];
 }
 
 function validateDealsPayload(deals) {
@@ -388,7 +417,7 @@ function normalizeDeal(deal) {
     brand: typeof deal.brand === "string" ? deal.brand : "",
     contact: typeof deal.contact === "string" ? deal.contact : "",
     phone: typeof deal.phone === "string" ? deal.phone : "",
-    platform: Array.isArray(deal.platform) ? deal.platform.filter(Boolean) : typeof deal.platform === "string" && deal.platform ? [deal.platform] : [],
+    platform: normalizePlatformList(Array.isArray(deal.platform) ? deal.platform.filter(Boolean) : typeof deal.platform === "string" && deal.platform ? [deal.platform] : []),
     stage: STAGES.includes(deal.stage) ? deal.stage : "Data Thô",
     pic: typeof deal.pic === "string" ? deal.pic : "",
     source: typeof deal.source === "string" ? deal.source : "",
