@@ -488,6 +488,7 @@ function normalizeDeal(deal) {
     brand: typeof deal.brand === "string" ? deal.brand : "",
     contact: typeof deal.contact === "string" ? deal.contact : "",
     phone: typeof deal.phone === "string" ? deal.phone : "",
+    ado: deal?.ado === null || deal?.ado === undefined ? "" : String(deal.ado),
     platform: normalizePlatformList(Array.isArray(deal.platform) ? deal.platform.filter(Boolean) : typeof deal.platform === "string" && deal.platform ? [deal.platform] : []),
     stage: STAGES.includes(deal.stage) ? deal.stage : "Data Thô",
     pic: typeof deal.pic === "string" ? deal.pic : "",

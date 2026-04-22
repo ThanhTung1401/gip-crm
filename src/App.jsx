@@ -287,6 +287,7 @@ const normalizeDeals = (rawDeals) =>
   Array.isArray(rawDeals)
     ? rawDeals.map((deal) => ({
         ...deal,
+        ado: deal?.ado === null || deal?.ado === undefined ? "" : String(deal.ado),
         platform: normalizePlatformList(Array.isArray(deal.platform) ? deal.platform : deal.platform ? [deal.platform] : []),
         deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "",
         notes: parseNotes(deal.notes),
@@ -438,13 +439,14 @@ const buildGipRankingReport = (deals) =>
 const exportExcel = (deals, reportMonth) => {
   const wb = XLSX.utils.book_new();
   const ws1 = XLSX.utils.aoa_to_sheet([
-    ["Brand", "Contact", "Phone", "Platform", "Stage", "Deal Status", "PIC", "Source", "Value", "Mã KH", "Bảng giá", "Ngày nhập data", "Gặp lần cuối", "Ghi chú gần nhất", "Ngày tạo"],
+    ["Brand", "Contact", "Phone", "ADO", "Platform", "Stage", "Deal Status", "PIC", "Source", "Value", "Mã KH", "Bảng giá", "Ngày nhập data", "Gặp lần cuối", "Ghi chú gần nhất", "Ngày tạo"],
     ...deals.map((d) => {
       const notes = parseNotes(d.notes);
       return [
         d.brand,
         d.contact,
         d.phone,
+        d.ado || "",
         Array.isArray(d.platform) ? d.platform.join(", ") : d.platform,
         d.stage,
         d.deal_status || "",
@@ -460,7 +462,7 @@ const exportExcel = (deals, reportMonth) => {
       ];
     }),
   ]);
-  ws1["!cols"] = [18, 16, 14, 18, 12, 20, 10, 18, 14, 12, 10, 14, 14, 30, 12].map((w) => ({ wch: w }));
+  ws1["!cols"] = [18, 16, 14, 10, 18, 12, 20, 10, 18, 14, 12, 10, 14, 14, 30, 12].map((w) => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws1, "Tất cả Deals");
 
   const ws2 = XLSX.utils.aoa_to_sheet([
@@ -531,6 +533,7 @@ const importHeaderAliases = {
   brand: ["brand", "tenbrand", "tenkhachhang", "khachhang", "customer", "company"],
   contact: ["contact", "nguoilienhe", "tennguoilienhe", "person"],
   phone: ["phone", "sodienthoai", "mobile", "telephone"],
+  ado: ["ado", "averagedailyorders", "average daily orders", "donngay", "sodonngay", "donmoingay"],
   platform: ["platform", "kenh", "san", "nen tang"],
   stage: ["stage", "giaidoan", "pipeline", "trangthai"],
   deal_status: ["dealstatus", "deal_status", "trangthaideal", "statusdeal"],
@@ -589,6 +592,7 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
       brand,
       contact: String(getImportValue(normalizedRow, importHeaderAliases.contact) || "").trim(),
       phone: String(getImportValue(normalizedRow, importHeaderAliases.phone) || "").trim(),
+      ado: String(getImportValue(normalizedRow, importHeaderAliases.ado) || "").trim(),
       platform,
       stage,
       deal_status,
@@ -612,20 +616,21 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
 const exportImportTemplate = () => {
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet([
-    ["Brand", "Contact", "Phone", "Platform", "Stage", "Deal Status", "PIC", "Source", "Value", "MaKH", "BangGia", "DataInputDate", "LastMeeting", "Notes"],
-    ["Cafune", "Linh", "0901234567", "Facebook, Shopee", "Data Thô", "New Lead", "GIP01", "Facebook", "50000000", "", "", "14/04/2026", "", "Khách mới, cần gọi tư vấn"],
+    ["Brand", "Contact", "Phone", "ADO", "Source", "Platform", "DataInputDate", "PIC", "Stage", "Deal Status", "Value", "MaKH", "BangGia", "LastMeeting", "Notes"],
+    ["Cafune", "Linh", "0901234567", "120", "Facebook", "Facebook, Shopee", "14/04/2026", "GIP01", "Data Thô", "New Lead", "50000000", "", "", "", "Khách mới, cần gọi tư vấn"],
   ]);
-  ws["!cols"] = [18, 16, 14, 20, 12, 20, 10, 16, 14, 12, 12, 14, 14, 30].map((w) => ({ wch: w }));
+  ws["!cols"] = [18, 16, 14, 10, 16, 20, 14, 10, 12, 20, 14, 12, 12, 14, 30].map((w) => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, "Mau Import");
 
   const guide = XLSX.utils.aoa_to_sheet([
     ["Huong dan"],
     ["1. Giữ nguyên hàng tiêu đề ở sheet Mẫu Import"],
     ["2. Date dùng dd/mm/yyyy hoặc yyyy-mm-dd"],
-    [`3. Platform hợp lệ: ${PLATFORMS.join(", ")}. Có thể nhập nhiều giá trị, ngăn cách bằng dấu phẩy`],
-    ["4. Stage hợp lệ: Data Thô, Freeze, Cold, Warm, Hot, Win"],
-    [`5. Deal Status hợp lệ: ${DEAL_STATUS_OPTIONS.join(", ")}`],
-    ["6. Nếu import từ link owner, PIC sẽ tự khóa theo owner đó"],
+    ["3. ADO = so don trung binh moi ngay"],
+    [`4. Platform hợp lệ: ${PLATFORMS.join(", ")}. Có thể nhập nhiều giá trị, ngăn cách bằng dấu phẩy`],
+    ["5. Stage hợp lệ: Data Thô, Freeze, Cold, Warm, Hot, Win"],
+    [`6. Deal Status hợp lệ: ${DEAL_STATUS_OPTIONS.join(", ")}`],
+    ["7. Nếu import từ link owner, PIC sẽ tự khóa theo owner đó"],
   ]);
   guide["!cols"] = [{ wch: 70 }];
   XLSX.utils.book_append_sheet(wb, guide, "Huong Dan");
@@ -1792,6 +1797,24 @@ function MiniBtn({ onClick, children, danger, title }) {
   return <button onClick={(e) => { e.stopPropagation(); onClick(); }} title={title} style={{ background: "transparent", border: "none", borderRadius: "4px", width: "20px", height: "20px", color: danger ? "#c0392b" : "#90a8c0", cursor: "pointer", fontSize: "12px", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit" }}>{children}</button>;
 }
 
+function FormBlock({ title, children, highlight = false }) {
+  return (
+    <div
+      style={{
+        gridColumn: "1 / -1",
+        marginTop: "10px",
+        padding: "16px",
+        borderRadius: "16px",
+        border: `1px solid ${highlight ? "#bfdbfe" : "#dde6f0"}`,
+        background: highlight ? "#f8fbff" : "#fbfdff",
+      }}
+    >
+      <div style={{ fontSize: "14px", fontWeight: "800", color: highlight ? UI.primary : UI.text, marginBottom: "14px" }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
 function LoginScreen({ owner, onLogin, canFallbackToLocal, onOpenSetup }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -1919,7 +1942,7 @@ function DealModal({ deal, ownerCodes, onSave, onClose, ownerMode, isMaster }) {
   const isNew = !deal.id;
   const initDate = deal.dataInputDate ? toDisplayDate(deal.dataInputDate) : isNew ? toDisplayDate(new Date().toISOString()) : "";
   const initMeeting = deal.lastMeeting ? toDisplayDate(deal.lastMeeting) : "";
-  const [f, setF] = useState({ brand: "", contact: "", phone: "", platform: [], stage: "Data Thô", pic: ownerMode || "", source: "", value: "", maKH: "", bangGia: "", ...deal, deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "", notes: parseNotes(deal.notes) });
+  const [f, setF] = useState({ brand: "", contact: "", phone: "", ado: "", platform: [], stage: "Data Thô", pic: ownerMode || "", source: "", value: "", maKH: "", bangGia: "", ...deal, deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "", notes: parseNotes(deal.notes) });
   const [dateInput, setDateInput] = useState(initDate);
   const [meetingInput, setMeetingInput] = useState(initMeeting);
   const [newNote, setNewNote] = useState("");
@@ -1941,74 +1964,83 @@ function DealModal({ deal, ownerCodes, onSave, onClose, ownerMode, isMaster }) {
 
   return (
     <Modal onClose={onClose}>
-      <div style={{ width: "520px", maxWidth: "93vw" }}>
+      <div style={{ width: "640px", maxWidth: "94vw" }}>
         <div style={{ fontFamily: "'Playfair Display',serif", fontSize: "18px", color: "#1a6fba", marginBottom: "18px" }}>{isNew ? "✦ Thêm Deal Mới" : "✦ Chỉnh sửa Deal"}</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "13px" }}>
-          <Field label="Tên Brand *" span><Inp value={f.brand} onChange={(v) => s("brand", v)} placeholder="Ví dụ: Cafuné, Owen..." /></Field>
-          <Field label="Người liên hệ"><Inp value={f.contact} onChange={(v) => s("contact", v)} placeholder="Tên người phụ trách" /></Field>
-          <Field label="Số điện thoại"><Inp value={f.phone} onChange={(v) => s("phone", v)} placeholder="0901..." /></Field>
-
-          <Field label="Ngày nhập data"><Inp value={dateInput} onChange={setDateInput} placeholder="DD/MM/YYYY" /></Field>
-          {(f.stage === "Warm" || f.stage === "Hot" || f.stage === "Win") && <Field label={`Gặp KH lần cuối ${MEETING_CADENCE[f.stage] ? `(cần gặp mỗi ${MEETING_CADENCE[f.stage]}n)` : ""}`}><Inp value={meetingInput} onChange={setMeetingInput} placeholder="DD/MM/YYYY" /></Field>}
-
-          <Field label="BD P.I.C" span>
-            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-              {ownerCodes.map((p) => {
-                const active = f.pic === p;
-                return <button key={p} onClick={() => (!ownerMode || isMaster) && s("pic", active ? "" : p)} style={{ background: active ? "#e8f3fc" : "#f4f8fc", border: `1.5px solid ${active ? "#90c0ef" : "#dde6f0"}`, borderRadius: "8px", padding: "5px 12px", color: active ? "#1a6fba" : "#90a8c0", fontSize: "12px", fontWeight: active ? "700" : "400", cursor: !ownerMode || isMaster ? "pointer" : "default", fontFamily: "inherit", opacity: ownerMode && !isMaster && !active ? 0.4 : 1 }}>{p}</button>;
-              })}
+          <FormBlock title="Thông tin khách">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "13px" }}>
+              <Field label="Tên Brand" span><Inp value={f.brand} onChange={(v) => s("brand", v)} placeholder="Ví dụ: Cafuné, Owen..." /></Field>
+              <Field label="Người liên hệ"><Inp value={f.contact} onChange={(v) => s("contact", v)} placeholder="Tên người phụ trách" /></Field>
+              <Field label="Số điện thoại"><Inp value={f.phone} onChange={(v) => s("phone", v)} placeholder="0901..." /></Field>
+              <Field label="ADO"><Inp value={f.ado || ""} onChange={(v) => s("ado", v)} placeholder="Số đơn/ngày" type="number" /></Field>
+              <Field label="Nguồn khách">
+                <select value={f.source} onChange={(e) => s("source", e.target.value)} style={dropdownStyle(f.source)}>
+                  <option value="">Chọn nguồn...</option>
+                  {Object.entries(SOURCE_GROUPS).map(([group, items]) => <optgroup key={group} label={`── ${group}`}>{items.map((src) => <option key={`${group}-${src}`} value={`${group}: ${src}`}>{src}</option>)}</optgroup>)}
+                </select>
+              </Field>
+              <Field label="Platform">
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", minHeight: "44px", alignItems: "center" }}>
+                  {PLATFORMS.map((p) => {
+                    const active = f.platform.includes(p);
+                    return <button key={p} onClick={() => togglePlatform(p)} style={{ background: active ? "#e8f3fc" : "#f4f8fc", border: `1.5px solid ${active ? "#90c0ef" : "#dde6f0"}`, borderRadius: "8px", padding: "5px 12px", color: active ? "#1a6fba" : "#90a8c0", fontSize: "12px", fontWeight: active ? "600" : "400", cursor: "pointer", fontFamily: "inherit" }}>{p}</button>;
+                  })}
+                </div>
+              </Field>
+              <Field label="Ngày nhập data"><Inp value={dateInput} onChange={setDateInput} placeholder="DD/MM/YYYY" /></Field>
+              {(f.stage === "Warm" || f.stage === "Hot" || f.stage === "Win") && <Field label={`Gặp KH lần cuối ${MEETING_CADENCE[f.stage] ? `(cần gặp mỗi ${MEETING_CADENCE[f.stage]}n)` : ""}`}><Inp value={meetingInput} onChange={setMeetingInput} placeholder="DD/MM/YYYY" /></Field>}
             </div>
-          </Field>
+          </FormBlock>
 
-          <Field label="Giai đoạn Pipeline" span>
-            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-              {STAGES.map((st) => {
-                const cfg = STAGE_CFG[st];
-                const active = f.stage === st;
-                const sla = SLA_DAYS[st];
-                return <button key={st} onClick={() => s("stage", st)} style={{ background: active ? cfg.badge : "#f4f8fc", border: `1.5px solid ${active ? cfg.border : "#dde6f0"}`, borderRadius: "8px", padding: "5px 12px", color: active ? cfg.color : "#90a8c0", fontSize: "12px", fontWeight: active ? "700" : "400", cursor: "pointer", fontFamily: "inherit" }}>{cfg.icon} {st}{sla ? <span style={{ fontSize: "9px", color: active ? cfg.color : "#b0c0d0", marginLeft: "3px" }}>({sla}n)</span> : null}</button>;
-              })}
-            </div>
-          </Field>
-
-          <Field label="Platform" span>
-            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-              {PLATFORMS.map((p) => {
-                const active = f.platform.includes(p);
-                return <button key={p} onClick={() => togglePlatform(p)} style={{ background: active ? "#e8f3fc" : "#f4f8fc", border: `1.5px solid ${active ? "#90c0ef" : "#dde6f0"}`, borderRadius: "8px", padding: "5px 12px", color: active ? "#1a6fba" : "#90a8c0", fontSize: "12px", fontWeight: active ? "600" : "400", cursor: "pointer", fontFamily: "inherit" }}>{p}</button>;
-              })}
-            </div>
-          </Field>
-
-          <Field label="Nguồn lead">
-            <select value={f.source} onChange={(e) => s("source", e.target.value)} style={dropdownStyle(f.source)}>
-              <option value="">Chọn nguồn...</option>
-              {Object.entries(SOURCE_GROUPS).map(([group, items]) => <optgroup key={group} label={`── ${group}`}>{items.map((src) => <option key={`${group}-${src}`} value={`${group}: ${src}`}>{src}</option>)}</optgroup>)}
-            </select>
-          </Field>
-
-          <Field label="Deal Status">
-            <select value={f.deal_status || ""} onChange={(e) => s("deal_status", e.target.value)} style={dropdownStyle(f.deal_status)}>
-              <option value="">Chọn trạng thái deal</option>
-              {DEAL_STATUS_OPTIONS.map((status) => <option key={status} value={status}>{status}</option>)}
-            </select>
-          </Field>
-
-          <Field label="Giá trị dự kiến (VND)"><Inp value={f.value} onChange={(v) => s("value", v)} placeholder="50000000" type="number" /></Field>
-
-          {isWin && <>
-            <Field label="🆔 Mã Khách Hàng"><Inp value={f.maKH || ""} onChange={(v) => s("maKH", v)} placeholder="GIP-KH-001" /></Field>
-            <Field label="💼 Bảng Giá">
-              <select value={f.bangGia || ""} onChange={(e) => s("bangGia", e.target.value)} style={{ ...dropdownStyle(f.bangGia), background: "#e6f8ee", border: "1px solid #80d0a8", color: f.bangGia ? "#1a7a45" : "#90a8c0" }}>
-                <option value="">Chọn bảng giá...</option>
-                {BANG_GIA.map((b) => <option key={b} value={b}>{b}</option>)}
-              </select>
+          <FormBlock title="BD phụ trách">
+            <Field label="BD P.I.C">
+              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                {ownerCodes.map((p) => {
+                  const active = f.pic === p;
+                  return <button key={p} onClick={() => (!ownerMode || isMaster) && s("pic", active ? "" : p)} style={{ background: active ? "#e8f3fc" : "#f4f8fc", border: `1.5px solid ${active ? "#90c0ef" : "#dde6f0"}`, borderRadius: "8px", padding: "5px 12px", color: active ? "#1a6fba" : "#90a8c0", fontSize: "12px", fontWeight: active ? "700" : "400", cursor: !ownerMode || isMaster ? "pointer" : "default", fontFamily: "inherit", opacity: ownerMode && !isMaster && !active ? 0.4 : 1 }}>{p}</button>;
+                })}
+              </div>
             </Field>
-          </>}
+          </FormBlock>
 
-          <Field label="Ghi chú" span>
-            <div style={{ display: "flex", gap: "6px", marginBottom: "8px" }}>
-              <input value={newNote} onChange={(e) => setNewNote(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addNote(); } }} placeholder="Nhập ghi chú → Enter để lưu..." style={{ background: "#f4f8fc", border: "1px solid #c8ddf0", borderRadius: "8px", padding: "8px 10px", color: "#1a2a3a", fontSize: "13px", flex: 1, outline: "none", fontFamily: "inherit" }} />
+          <FormBlock title="Trạng thái deal" highlight>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "13px" }}>
+              <Field label="Giai đoạn Pipeline">
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  {STAGES.map((st) => {
+                    const cfg = STAGE_CFG[st];
+                    const active = f.stage === st;
+                    const sla = SLA_DAYS[st];
+                    return <button key={st} onClick={() => s("stage", st)} style={{ background: active ? cfg.badge : "#f4f8fc", border: `1.5px solid ${active ? cfg.border : "#dde6f0"}`, borderRadius: "8px", padding: "5px 12px", color: active ? cfg.color : "#90a8c0", fontSize: "12px", fontWeight: active ? "700" : "400", cursor: "pointer", fontFamily: "inherit" }}>{cfg.icon} {st}{sla ? <span style={{ fontSize: "9px", color: active ? cfg.color : "#b0c0d0", marginLeft: "3px" }}>({sla}n)</span> : null}</button>;
+                  })}
+                </div>
+              </Field>
+              <Field label="Deal Status">
+                <select value={f.deal_status || ""} onChange={(e) => s("deal_status", e.target.value)} style={dropdownStyle(f.deal_status)}>
+                  <option value="">Chọn trạng thái deal</option>
+                  {DEAL_STATUS_OPTIONS.map((status) => <option key={status} value={status}>{status}</option>)}
+                </select>
+              </Field>
+              <Field label="Giá trị dự kiến (VND)">
+                <Inp value={f.value} onChange={(v) => s("value", v)} placeholder="50000000" type="number" />
+              </Field>
+              {isWin && (
+                <>
+                  <Field label="🆔 Mã Khách Hàng"><Inp value={f.maKH || ""} onChange={(v) => s("maKH", v)} placeholder="GIP-KH-001" /></Field>
+                  <Field label="💼 Bảng Giá">
+                    <select value={f.bangGia || ""} onChange={(e) => s("bangGia", e.target.value)} style={{ ...dropdownStyle(f.bangGia), background: "#e6f8ee", border: "1px solid #80d0a8", color: f.bangGia ? "#1a7a45" : "#90a8c0" }}>
+                      <option value="">Chọn bảng giá...</option>
+                      {BANG_GIA.map((b) => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                  </Field>
+                </>
+              )}
+            </div>
+          </FormBlock>
+
+          <FormBlock title="Ghi chú">
+            <div style={{ display: "flex", gap: "6px", marginBottom: "8px", alignItems: "stretch" }}>
+              <textarea value={newNote} onChange={(e) => setNewNote(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addNote(); } }} placeholder="Nhập ghi chú → Enter để lưu..." rows={3} style={{ background: "#f4f8fc", border: "1px solid #c8ddf0", borderRadius: "8px", padding: "10px 12px", color: "#1a2a3a", fontSize: "13px", flex: 1, outline: "none", fontFamily: "inherit", resize: "vertical", minHeight: "84px" }} />
               <button onClick={addNote} style={{ background: "linear-gradient(135deg,#1a6fba,#2196f3)", border: "none", borderRadius: "8px", padding: "8px 14px", color: "#fff", fontWeight: "700", fontSize: "13px", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>➕ Thêm</button>
             </div>
             {f.notes.length > 0 ? (
@@ -2022,7 +2054,7 @@ function DealModal({ deal, ownerCodes, onSave, onClose, ownerMode, isMaster }) {
                 ))}
               </div>
             ) : <div style={{ fontSize: "11px", color: "#c0cfd8", textAlign: "center", padding: "12px 0" }}>Chưa có ghi chú</div>}
-          </Field>
+          </FormBlock>
         </div>
 
         {!isNew && f.createdAt && <div style={{ fontSize: "11px", color: "#a0b8d0", marginTop: "12px" }}>📅 Tạo: {fmtDate(f.createdAt)} · Cập nhật: {fmtDate(f.updatedAt)}</div>}
