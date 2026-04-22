@@ -51,6 +51,7 @@ const AUTO_BACKUP_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_BACKUP_FILES = 24;
 const ENABLE_LOCAL_BACKUP = String(process.env.ENABLE_LOCAL_BACKUP || "true").toLowerCase() !== "false";
 const ENABLE_DRIVE_UPLOAD = String(process.env.ENABLE_DRIVE_UPLOAD || "false").toLowerCase() === "true";
+const ONLINE_CRM_BASE_URL = String(process.env.ONLINE_CRM_BASE_URL || "https://gip-crm.onrender.com").replace(/\/+$/, "");
 const GOOGLE_DRIVE_SYNC_DIR = (process.env.GOOGLE_DRIVE_SYNC_DIR || "").trim();
 const DEFAULT_SERVICE_ACCOUNT_KEY_PATH = join(__dirname, "config", "google-service-account.json");
 const GOOGLE_DRIVE_FOLDER_ID = (process.env.GOOGLE_DRIVE_FOLDER_ID || "").trim();
@@ -137,6 +138,10 @@ function listBackupFiles() {
     .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 }
 
+function getLatestBackupFile() {
+  return listBackupFiles()[0] || null;
+}
+
 function cleanupOldBackups() {
   const files = listBackupFiles();
   const removable = files.slice(MAX_BACKUP_FILES);
@@ -151,6 +156,28 @@ function cleanupOldBackups() {
     kept: Math.min(files.length, MAX_BACKUP_FILES),
     removed: removable.map((file) => file.fileName),
   };
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok || json.ok === false) {
+    throw new Error(json.error || `request_failed_${response.status}`);
+  }
+  return json;
+}
+
+function extractBackupPayload(response) {
+  if (response?.backup && typeof response.backup === "object") return response.backup;
+  if (response?.data && response?.version && response?.exportedAt) {
+    return {
+      exportedAt: response.exportedAt,
+      version: response.version,
+      metadata: response.metadata,
+      data: response.data,
+    };
+  }
+  return null;
 }
 
 function createAutomaticBackup(reason = "scheduled") {
@@ -332,6 +359,50 @@ async function uploadFileToDrive(filePath, fileName) {
 
   console.log(`Backup uploaded to Google Drive: ${fileName}`);
   return created.data;
+}
+
+async function syncFromOnline() {
+  const syncStartedAt = new Date().toISOString();
+  console.log(`[crm] sync_from_online_started at=${syncStartedAt} base=${ONLINE_CRM_BASE_URL}`);
+
+  const current = loadState();
+  const preSyncPayload = buildBackupPayload(current, { reason: "pre-sync-from-online", sourceBaseUrl: ONLINE_CRM_BASE_URL });
+  const preSyncFile = writeBackupFile(preSyncPayload, "pre-sync");
+
+  let payload;
+  let sourceBackupFile = null;
+
+  const backupsIndex = await fetchJson(`${ONLINE_CRM_BASE_URL}/api/backups`).catch(() => null);
+  const latestRemote = Array.isArray(backupsIndex?.backups) ? backupsIndex.backups[0] : null;
+
+  if (latestRemote) {
+    const latestPayload = await fetchJson(`${ONLINE_CRM_BASE_URL}/api/backups/latest`).catch(() => null);
+    payload = extractBackupPayload(latestPayload);
+    sourceBackupFile = latestPayload?.backupFile || latestRemote;
+  }
+
+  if (!payload) {
+    const generatedBackup = await fetchJson(`${ONLINE_CRM_BASE_URL}/api/backup`);
+    payload = extractBackupPayload(generatedBackup);
+    sourceBackupFile = generatedBackup?.backupFile || sourceBackupFile || null;
+  }
+
+  validateBackupPayload(payload);
+  validateDealsPayload(payload.data.deals);
+
+  const restored = saveState(payload.data);
+  console.log(
+    `[crm] sync_from_online_success at=${new Date().toISOString()} records=${restored.deals.length} sourceBackup=${sourceBackupFile?.fileName || "live-backup"}`,
+  );
+
+  return {
+    syncedAt: new Date().toISOString(),
+    sourceBaseUrl: ONLINE_CRM_BASE_URL,
+    sourceBackupFile,
+    preSyncFile,
+    records: restored.deals.length,
+    state: restored,
+  };
 }
 
 function normalizeOwnerCodes(raw) {
@@ -685,6 +756,21 @@ async function route(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/backups/latest") {
+    const latest = getLatestBackupFile();
+    if (!latest) {
+      sendJson(res, 404, { ok: false, error: "backup_not_found" });
+      return;
+    }
+    const payload = JSON.parse(readFileSync(latest.filePath, "utf8"));
+    sendJson(res, 200, {
+      ok: true,
+      backupFile: latest,
+      backup: payload,
+    });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/state") {
     const state = loadState();
     const owner = String(url.searchParams.get("owner") || "");
@@ -802,6 +888,12 @@ async function route(req, res) {
 
   if (req.method === "POST" && url.pathname === "/api/scan") {
     const result = await scanAndNotify();
+    sendJson(res, 200, { ok: true, ...result });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/sync-from-online") {
+    const result = await syncFromOnline();
     sendJson(res, 200, { ok: true, ...result });
     return;
   }

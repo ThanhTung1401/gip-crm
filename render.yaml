@@ -19,7 +19,7 @@ services:
       - key: ENABLE_LOCAL_BACKUP
         value: "true"
       - key: ENABLE_DRIVE_UPLOAD
-        value: "false"
+        value: "true"
       - key: GOOGLE_DRIVE_FOLDER_ID
         sync: false
       - key: GOOGLE_SERVICE_ACCOUNT_JSON

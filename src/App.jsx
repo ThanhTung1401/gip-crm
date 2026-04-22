@@ -1040,6 +1040,23 @@ export default function App() {
     }
   };
 
+  const syncFromOnline = async () => {
+    try {
+      const result = await apiRequest("/sync-from-online");
+      const state = result.state || {};
+      if (state.ownerCodes) setOwnerCodes(normalizeOwnerCodes(state.ownerCodes));
+      setDeals(normalizeDeals(state.deals));
+      if (state.authConfig) setAuthConfig(normalizeAuthConfig(state.authConfig, state.ownerCodes || ownerCodes));
+      if (state.telegramConfig) setTelegramConfig(normalizeTelegramConfig(state.telegramConfig, state.ownerCodes || ownerCodes));
+      if (state.followupConfig) setFollowupConfig(normalizeFollowupConfig(state.followupConfig));
+      setBackendReady(true);
+      window.alert(`Đã đồng bộ dữ liệu từ hệ thống online.\nSố records: ${result.records || 0}\nBackup dùng: ${result?.sourceBackupFile?.fileName || "live-backup"}`);
+    } catch (error) {
+      setBackendReady(false);
+      window.alert(`Không đồng bộ được dữ liệu từ online: ${error.message || "sync_failed"}`);
+    }
+  };
+
   const logout = () => setSessionOwner("");
 
   const visibleDeals = ownerMode ? deals.filter((d) => d.pic === ownerMode) : deals;
@@ -1186,7 +1203,7 @@ export default function App() {
       {showAddOptions && <AddDealOptionsModal preset={addPreset} onSingleAdd={() => { setModalDeal({ stage: addPreset.stage || "Data Thô", pic: addPreset.pic || ownerMode || "" }); setShowAddOptions(false); }} onImport={() => { setShowImportModal(true); setShowAddOptions(false); }} onClose={() => setShowAddOptions(false)} />}
       {showImportModal && <ImportDealsModal preset={addPreset} ownerMode={ownerMode} onDownloadTemplate={exportImportTemplate} onImport={importDeals} onClose={() => setShowImportModal(false)} />}
       {modalDeal !== null && <DealModal deal={modalDeal} ownerCodes={allOwnerCodes} onSave={saveDeal} onClose={() => setModalDeal(null)} ownerMode={ownerMode} isMaster={isMaster} />}
-      {canOpenSettings && showSetup && <SetupModal currentAccount={currentAccount} isMaster={isMaster} ownerCodes={ownerCodes} authConfig={authConfig} telegramConfig={telegramConfig} followupConfig={followupConfig} backendReady={backendReady} onSave={saveSettings} onTestTelegram={testTelegram} onRunScan={runAlertScan} onDownloadBackup={downloadBackup} onRestoreBackup={restoreBackup} onClose={() => setShowSetup(false)} />}
+      {canOpenSettings && showSetup && <SetupModal currentAccount={currentAccount} isMaster={isMaster} ownerCodes={ownerCodes} authConfig={authConfig} telegramConfig={telegramConfig} followupConfig={followupConfig} backendReady={backendReady} onSave={saveSettings} onTestTelegram={testTelegram} onRunScan={runAlertScan} onDownloadBackup={downloadBackup} onRestoreBackup={restoreBackup} onSyncFromOnline={syncFromOnline} onClose={() => setShowSetup(false)} />}
     </div>
   );
 }
@@ -2018,7 +2035,7 @@ function DealModal({ deal, ownerCodes, onSave, onClose, ownerMode, isMaster }) {
   );
 }
 
-function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegramConfig, followupConfig, backendReady, onSave, onTestTelegram, onRunScan, onDownloadBackup, onRestoreBackup, onClose }) {
+function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegramConfig, followupConfig, backendReady, onSave, onTestTelegram, onRunScan, onDownloadBackup, onRestoreBackup, onSyncFromOnline, onClose }) {
   const [localOwnerRows, setLocalOwnerRows] = useState(() => makeOwnerRows(ownerCodes));
   const [localAuth, setLocalAuth] = useState(() => normalizeAuthConfig(authConfig, ownerCodes));
   const [localTelegram, setLocalTelegram] = useState(() => normalizeTelegramConfig(telegramConfig, ownerCodes));
@@ -2205,6 +2222,7 @@ function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegram
             </div>
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", marginBottom: "10px" }}>
               <Btn blue onClick={onDownloadBackup}>Tải backup ngay</Btn>
+              <Btn onClick={onSyncFromOnline}>Sync dữ liệu từ Online</Btn>
             </div>
             <div style={{ background: "#fff", border: "1px solid #dde6f0", borderRadius: "10px", padding: "12px" }}>
               <div style={{ fontSize: "11px", color: "#1a2a3a", fontWeight: "700", marginBottom: "8px" }}>Khôi phục từ file backup</div>
