@@ -847,12 +847,11 @@ async function route(req, res) {
     const state = loadState();
     const owner = String(url.searchParams.get("owner") || "");
     const access = getAccessProfile(state, owner);
+    const telegramOwner = owner || MASTER_OWNER;
     const visibleAuthConfig = owner && owner !== MASTER_OWNER
       ? { [owner]: state.authConfig?.[owner] || normalizeAuthEntry(null, owner, state.ownerCodes) }
       : state.authConfig;
-    const visibleTelegramConfig = owner
-      ? { [owner]: state.telegramConfig?.[owner] || { botToken: "", chatId: "" } }
-      : {};
+    const visibleTelegramConfig = { [telegramOwner]: state.telegramConfig?.[telegramOwner] || { botToken: "", chatId: "" } };
     sendJson(res, 200, {
       ok: true,
       ownerCodes: state.ownerCodes,
