@@ -706,6 +706,7 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [filterPIC, setFilterPIC] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [hydratedFromBackend, setHydratedFromBackend] = useState(false);
   const [tab, setTab] = useState("pipeline");
   const [reportFrom, setReportFrom] = useState(initialReportRange.from);
   const [reportTo, setReportTo] = useState(initialReportRange.to);
@@ -822,12 +823,14 @@ export default function App() {
   useEffect(() => {
     if (!loaded) return;
     let ignore = false;
+    setHydratedFromBackend(false);
 
     const hydrateFromBackend = async () => {
       try {
         const state = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
         if (ignore) return;
         setBackendReady(true);
+        setHydratedFromBackend(true);
         if (state.ownerCodes) setOwnerCodes(normalizeOwnerCodes(state.ownerCodes));
         setDeals(normalizeDeals(state.deals));
         if (state.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(state.authConfig, state.ownerCodes || ownerCodes) }));
@@ -845,7 +848,7 @@ export default function App() {
   }, [loaded, currentAccount]);
 
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !hydratedFromBackend || !backendReady || !isAuthenticated) return;
     setSyncState("syncing");
     const timer = window.setTimeout(async () => {
       try {
@@ -853,7 +856,7 @@ export default function App() {
           method: "POST",
           body: JSON.stringify({
             actorOwner: currentAccount,
-            ownerCodes,
+            ownerCodes: canManageMasterSettings ? ownerCodes : undefined,
             deals,
             authConfig: canManageMasterSettings ? authConfig : undefined,
             telegramConfig: { [currentAccount]: telegramConfig[currentAccount] || { botToken: "", chatId: "" } },
@@ -869,7 +872,7 @@ export default function App() {
     }, 400);
 
     return () => window.clearTimeout(timer);
-  }, [ownerCodes, deals, authConfig, telegramConfig, followupConfig, loaded, currentAccount, canManageMasterSettings]);
+  }, [ownerCodes, deals, authConfig, telegramConfig, followupConfig, loaded, hydratedFromBackend, backendReady, isAuthenticated, currentAccount, canManageMasterSettings]);
 
   const applyAccessDefaultsToDeal = (deal) => {
     const nextPic = effectiveRole === DEFAULT_MASTER_ROLE ? deal.pic || "" : currentAccount;
@@ -956,7 +959,7 @@ export default function App() {
           method: "POST",
           body: JSON.stringify({
             actorOwner: currentAccount,
-            ownerCodes,
+            ownerCodes: canManageMasterSettings ? ownerCodes : undefined,
             deals,
             authConfig: canManageMasterSettings ? authConfig : undefined,
             telegramConfig: { [currentAccount]: telegramConfig[currentAccount] || { botToken: "", chatId: "" } },

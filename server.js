@@ -438,17 +438,24 @@ function normalizeTeamValue(value, pic, ownerCodes = DEFAULT_OWNER_CODES) {
 }
 
 function normalizeAuthEntry(value, pic, ownerCodes = DEFAULT_OWNER_CODES) {
+  const existing = typeof value === "object" && value !== null ? value : {};
   if (typeof value === "string") {
     return {
       password: value,
       role: normalizeRoleValue(undefined, pic),
       team: normalizeTeamValue(undefined, pic, ownerCodes),
+      displayName: "",
+      name: "",
+      fullName: "",
     };
   }
   return {
     password: typeof value?.password === "string" ? value.password : "",
     role: normalizeRoleValue(value?.role, pic),
     team: normalizeTeamValue(value?.team, pic, ownerCodes),
+    displayName: typeof existing.displayName === "string" ? existing.displayName : "",
+    name: typeof existing.name === "string" ? existing.name : "",
+    fullName: typeof existing.fullName === "string" ? existing.fullName : "",
   };
 }
 
@@ -480,6 +487,35 @@ function mergeDealsByAccess(currentDeals, incomingDeals, access) {
   return [...keepCurrent, ...allowedIncoming];
 }
 
+function deriveOwnerCodes(raw) {
+  if (Array.isArray(raw?.ownerCodes)) return normalizeOwnerCodes(raw.ownerCodes);
+  const authOwners =
+    raw?.authConfig && typeof raw.authConfig === "object"
+      ? Object.keys(raw.authConfig).filter((owner) => owner && owner !== MASTER_OWNER)
+      : [];
+  const dealOwners = Array.isArray(raw?.deals) ? raw.deals.map((deal) => String(deal?.pic || "")).filter(Boolean) : [];
+  const derived = normalizeOwnerCodes([...authOwners, ...dealOwners]);
+  return derived.length ? derived : normalizeOwnerCodes(DEFAULT_OWNER_CODES);
+}
+
+function mergeAuthConfig(currentAuth, incomingAuth, ownerCodes) {
+  if (!incomingAuth || typeof incomingAuth !== "object") return currentAuth;
+  const next = { ...currentAuth };
+  buildAllOwnerCodes(ownerCodes).forEach((owner) => {
+    if (!(owner in incomingAuth)) return;
+    const previous = normalizeAuthEntry(currentAuth?.[owner], owner, ownerCodes);
+    const incoming = incomingAuth[owner];
+    const mergedRaw =
+      typeof incoming === "string"
+        ? { ...previous, password: incoming }
+        : typeof incoming === "object" && incoming !== null
+          ? { ...previous, ...incoming }
+          : previous;
+    next[owner] = normalizeAuthEntry(mergedRaw, owner, ownerCodes);
+  });
+  return next;
+}
+
 function makeDefaultState() {
   const ownerCodes = [...DEFAULT_OWNER_CODES];
   return {
@@ -497,29 +533,40 @@ function loadState() {
   ensureStore();
   try {
     const raw = JSON.parse(readFileSync(DATA_FILE, "utf8"));
-    return normalizeState(raw);
+    const normalized = normalizeState(raw, { logSource: "disk" });
+    console.info(`[state] Loaded from disk: ${DATA_FILE} (deals=${normalized.deals.length}, owners=${normalized.ownerCodes.length})`);
+    return normalized;
   } catch {
     const fallback = makeDefaultState();
     saveState(fallback);
+    console.warn(`[state] Data file missing/invalid. Initialized new state at ${DATA_FILE}`);
     return fallback;
   }
 }
 
 function saveState(nextState) {
-  const normalized = normalizeState(nextState);
+  const normalized = normalizeState(nextState, { logSource: "save" });
   normalized.updatedAt = new Date().toISOString();
   ensureStore();
   writeFileSync(DATA_FILE, JSON.stringify(normalized, null, 2));
   return normalized;
 }
 
-function normalizeState(raw) {
+function normalizeState(raw, options = {}) {
   const base = makeDefaultState();
-  const ownerCodes = normalizeOwnerCodes(raw?.ownerCodes);
+  const ownerCodes = deriveOwnerCodes(raw);
   let deals = Array.isArray(raw?.deals) ? raw.deals.map(normalizeDeal).filter(Boolean) : [];
+  let authPatched = 0;
+  let teamPatched = 0;
   const authConfig = { ...base.authConfig };
   buildAllOwnerCodes(ownerCodes).forEach((pic) => {
-    authConfig[pic] = normalizeAuthEntry(raw?.authConfig?.[pic], pic, ownerCodes);
+    const before = raw?.authConfig?.[pic];
+    const normalizedEntry = normalizeAuthEntry(before, pic, ownerCodes);
+    authConfig[pic] = normalizedEntry;
+    const beforeObj = typeof before === "object" && before !== null ? before : {};
+    if (!before || typeof before === "string" || beforeObj.role !== normalizedEntry.role || beforeObj.team !== normalizedEntry.team) {
+      authPatched += 1;
+    }
   });
   const telegramConfig = { ...base.telegramConfig };
   buildAllOwnerCodes(ownerCodes).forEach((pic) => {
@@ -534,10 +581,14 @@ function normalizeState(raw) {
     if (Number.isFinite(value) && value >= 0) followupConfig[stage] = value;
   });
   const alertLog = raw?.alertLog && typeof raw.alertLog === "object" ? raw.alertLog : {};
-  deals = deals.map((deal) => ({
-    ...deal,
-    team: TEAM_OPTIONS.includes(deal.team) ? deal.team : getAuthEntry(authConfig, deal.pic, ownerCodes).team,
-  }));
+  deals = deals.map((deal) => {
+    if (TEAM_OPTIONS.includes(deal.team)) return deal;
+    teamPatched += 1;
+    return { ...deal, team: getAuthEntry(authConfig, deal.pic, ownerCodes).team };
+  });
+  if (options.logSource === "disk" && (authPatched > 0 || teamPatched > 0)) {
+    console.info(`[state] Migration applied on load: authPatched=${authPatched}, dealTeamPatched=${teamPatched}`);
+  }
 
   return {
     ownerCodes,
@@ -871,7 +922,16 @@ async function route(req, res) {
     const current = loadState();
     const actorOwner = String(body.actorOwner || MASTER_OWNER);
     const access = getAccessProfile(current, actorOwner);
-    const mergedAuthConfig = body.authConfig ? { ...current.authConfig, ...body.authConfig } : current.authConfig;
+    const hasSensitiveStateChange = body.ownerCodes !== undefined || body.authConfig !== undefined || body.followupConfig !== undefined;
+    if (hasSensitiveStateChange) {
+      try {
+        writeBackupFile(buildBackupPayload(current), "pre-state-write");
+      } catch (error) {
+        console.error(`[state] Failed to create pre-write backup: ${error?.message || "backup_failed"}`);
+      }
+    }
+    const nextOwnerCodes = access.role === MASTER_ROLE && body.ownerCodes ? normalizeOwnerCodes(body.ownerCodes) : current.ownerCodes;
+    const mergedAuthConfig = access.role === MASTER_ROLE ? mergeAuthConfig(current.authConfig, body.authConfig, nextOwnerCodes) : current.authConfig;
     const mergedTelegramConfig = body.telegramConfig
       ? {
           ...current.telegramConfig,
@@ -888,11 +948,11 @@ async function route(req, res) {
       : current.telegramConfig;
     const next = saveState({
       ...current,
-      ownerCodes: body.ownerCodes || current.ownerCodes,
+      ownerCodes: nextOwnerCodes,
       deals: Array.isArray(body.deals) ? mergeDealsByAccess(current.deals, body.deals, access) : current.deals,
       authConfig: mergedAuthConfig,
       telegramConfig: mergedTelegramConfig,
-      followupConfig: body.followupConfig || current.followupConfig,
+      followupConfig: access.role === MASTER_ROLE && body.followupConfig ? body.followupConfig : current.followupConfig,
       alertLog: current.alertLog || {},
     });
     sendJson(res, 200, { ok: true, updatedAt: next.updatedAt });
