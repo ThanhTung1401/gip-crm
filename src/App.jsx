@@ -32,6 +32,11 @@ const DEAL_STATUS_OPTIONS = [
 ];
 const MASTER_OWNER = "GIPMANA";
 const DEFAULT_OWNER_CODES = ["GIP01", "GIP02", "GIP03", "GIP04", "GIP05", "GIP06"];
+const TEAM_OPTIONS = ["PKD1", "PKD2"];
+const ROLE_OPTIONS = ["USER", "MANAGER", "MASTER"];
+const DEFAULT_USER_ROLE = "USER";
+const DEFAULT_MANAGER_ROLE = "MANAGER";
+const DEFAULT_MASTER_ROLE = "MASTER";
 const BANG_GIA = ["GP01", "GP02", "GP03", "Enterprise", "Custom"];
 const SOURCE_GROUPS = {
   "Cá nhân": ["Facebook", "Zalo", "Group", "Khách giới thiệu", "Khác"],
@@ -243,16 +248,59 @@ let ownerRowSeq = 0;
 const createOwnerRow = (code = "") => ({ id: `owner-row-${ownerRowSeq++}`, code: String(code || "").trim().toUpperCase() });
 const makeOwnerRows = (raw) => normalizeOwnerCodes(raw).map((code) => createOwnerRow(code));
 const buildAllOwnerCodes = (ownerCodes) => [MASTER_OWNER, ...normalizeOwnerCodes(ownerCodes)];
-const makeEmptyAuthConfig = (ownerCodes = DEFAULT_OWNER_CODES) => Object.fromEntries(buildAllOwnerCodes(ownerCodes).map((pic) => [pic, ""]));
+const getDefaultTeamForOwner = (pic, ownerCodes = DEFAULT_OWNER_CODES) => {
+  if (!pic || pic === MASTER_OWNER) return "";
+  const normalizedOwners = normalizeOwnerCodes(ownerCodes);
+  const index = normalizedOwners.indexOf(pic);
+  if (index === -1) return TEAM_OPTIONS[0];
+  const pivot = Math.ceil(normalizedOwners.length / TEAM_OPTIONS.length);
+  return index < pivot ? "PKD1" : "PKD2";
+};
+const normalizeRoleValue = (value, pic) => {
+  if (pic === MASTER_OWNER) return DEFAULT_MASTER_ROLE;
+  return value === DEFAULT_MANAGER_ROLE ? DEFAULT_MANAGER_ROLE : DEFAULT_USER_ROLE;
+};
+const normalizeTeamValue = (value, pic, ownerCodes = DEFAULT_OWNER_CODES) => {
+  if (pic === MASTER_OWNER) return "";
+  return TEAM_OPTIONS.includes(value) ? value : getDefaultTeamForOwner(pic, ownerCodes);
+};
+const normalizeAuthEntry = (value, pic, ownerCodes = DEFAULT_OWNER_CODES) => {
+  if (typeof value === "string") {
+    return {
+      password: value,
+      role: normalizeRoleValue(undefined, pic),
+      team: normalizeTeamValue(undefined, pic, ownerCodes),
+    };
+  }
+  return {
+    password: typeof value?.password === "string" ? value.password : "",
+    role: normalizeRoleValue(value?.role, pic),
+    team: normalizeTeamValue(value?.team, pic, ownerCodes),
+  };
+};
+const makeEmptyAuthConfig = (ownerCodes = DEFAULT_OWNER_CODES) =>
+  Object.fromEntries(buildAllOwnerCodes(ownerCodes).map((pic) => [pic, normalizeAuthEntry(null, pic, ownerCodes)]));
 const normalizeAuthConfig = (raw, ownerCodes = DEFAULT_OWNER_CODES) => {
   const base = makeEmptyAuthConfig(ownerCodes);
   if (!raw || typeof raw !== "object") return base;
   buildAllOwnerCodes(ownerCodes).forEach((pic) => {
-    base[pic] = typeof raw[pic] === "string" ? raw[pic] : "";
+    base[pic] = normalizeAuthEntry(raw[pic], pic, ownerCodes);
   });
   return base;
 };
-const hasAnyPassword = (config, ownerCodes = DEFAULT_OWNER_CODES) => Object.values(normalizeAuthConfig(config, ownerCodes)).some((value) => value.trim());
+const hasAnyPassword = (config, ownerCodes = DEFAULT_OWNER_CODES) => Object.values(normalizeAuthConfig(config, ownerCodes)).some((value) => value.password.trim());
+const getAuthEntry = (config, owner, ownerCodes = DEFAULT_OWNER_CODES) => normalizeAuthConfig(config, ownerCodes)[owner] || normalizeAuthEntry(null, owner, ownerCodes);
+const inferDealTeam = (deal, authConfig, ownerCodes = DEFAULT_OWNER_CODES) => {
+  if (TEAM_OPTIONS.includes(deal?.team)) return deal.team;
+  const pic = String(deal?.pic || "");
+  if (pic) return getAuthEntry(authConfig, pic, ownerCodes).team || getDefaultTeamForOwner(pic, ownerCodes);
+  return "";
+};
+const filterDealsByAccess = (deals, { owner, role, team }) => {
+  if (role === DEFAULT_MASTER_ROLE) return deals;
+  if (role === DEFAULT_MANAGER_ROLE) return deals.filter((deal) => deal.team === team);
+  return deals.filter((deal) => deal.pic === owner);
+};
 const makeEmptyTelegramConfig = (ownerCodes = DEFAULT_OWNER_CODES) => Object.fromEntries(buildAllOwnerCodes(ownerCodes).map((pic) => [pic, { botToken: "", chatId: "" }]));
 const normalizeTelegramConfig = (raw, ownerCodes = DEFAULT_OWNER_CODES) => {
   const base = makeEmptyTelegramConfig(ownerCodes);
@@ -288,6 +336,7 @@ const normalizeDeals = (rawDeals) =>
     ? rawDeals.map((deal) => ({
         ...deal,
         ado: deal?.ado === null || deal?.ado === undefined ? "" : String(deal.ado),
+        team: TEAM_OPTIONS.includes(deal?.team) ? deal.team : "",
         platform: normalizePlatformList(Array.isArray(deal.platform) ? deal.platform : deal.platform ? [deal.platform] : []),
         deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "",
         notes: parseNotes(deal.notes),
@@ -645,7 +694,7 @@ export default function App() {
   const [authConfig, setAuthConfig] = useState(makeEmptyAuthConfig(DEFAULT_OWNER_CODES));
   const [telegramConfig, setTelegramConfig] = useState(makeEmptyTelegramConfig(DEFAULT_OWNER_CODES));
   const [followupConfig, setFollowupConfig] = useState(FOLLOWUP_HOURS_DEFAULT);
-  const [sessionOwner, setSessionOwner] = useState("");
+  const [sessionProfile, setSessionProfile] = useState(null);
   const [showSetup, setShowSetup] = useState(false);
   const [showAddOptions, setShowAddOptions] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -667,9 +716,12 @@ export default function App() {
   const allOwnerCodes = buildAllOwnerCodes(ownerCodes);
   const isMaster = !ownerMode;
   const currentAccount = ownerMode || MASTER_OWNER;
-  const requiresLogin = ownerMode ? true : !!authConfig[MASTER_OWNER]?.trim();
-  const hasPasswordForOwner = !!authConfig[currentAccount]?.trim();
-  const isAuthenticated = !requiresLogin || sessionOwner === currentAccount;
+  const currentAuth = getAuthEntry(authConfig, currentAccount, ownerCodes);
+  const effectiveRole = sessionProfile?.owner === currentAccount ? sessionProfile.role : currentAuth.role;
+  const effectiveTeam = sessionProfile?.owner === currentAccount ? sessionProfile.team : currentAuth.team;
+  const requiresLogin = ownerMode ? true : !!currentAuth.password.trim();
+  const hasPasswordForOwner = !!currentAuth.password.trim();
+  const isAuthenticated = !requiresLogin || sessionProfile?.owner === currentAccount;
   const canManageMasterSettings = isMaster && isAuthenticated;
   const canOpenSettings = isAuthenticated;
 
@@ -696,7 +748,16 @@ export default function App() {
     } catch {}
     try {
       const r = localStorage.getItem("gip_auth_session");
-      if (r) setSessionOwner(JSON.parse(r).owner || "");
+      if (r) {
+        const parsed = JSON.parse(r);
+        if (parsed?.owner) {
+          setSessionProfile({
+            owner: parsed.owner,
+            role: ROLE_OPTIONS.includes(parsed.role) ? parsed.role : parsed.owner === MASTER_OWNER ? DEFAULT_MASTER_ROLE : DEFAULT_USER_ROLE,
+            team: TEAM_OPTIONS.includes(parsed.team) ? parsed.team : "",
+          });
+        }
+      }
     } catch {}
     setLoaded(true);
   }, []);
@@ -749,14 +810,14 @@ export default function App() {
   useEffect(() => {
     if (loaded) {
       try {
-        if (sessionOwner) {
-          localStorage.setItem("gip_auth_session", JSON.stringify({ owner: sessionOwner, loggedAt: new Date().toISOString() }));
+        if (sessionProfile?.owner) {
+          localStorage.setItem("gip_auth_session", JSON.stringify({ ...sessionProfile, loggedAt: new Date().toISOString() }));
         } else {
           localStorage.removeItem("gip_auth_session");
         }
       } catch {}
     }
-  }, [sessionOwner, loaded]);
+  }, [sessionProfile, loaded]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -791,6 +852,7 @@ export default function App() {
         await apiRequest("/state", {
           method: "POST",
           body: JSON.stringify({
+            actorOwner: currentAccount,
             ownerCodes,
             deals,
             authConfig: canManageMasterSettings ? authConfig : undefined,
@@ -809,27 +871,36 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [ownerCodes, deals, authConfig, telegramConfig, followupConfig, loaded, currentAccount, canManageMasterSettings]);
 
+  const applyAccessDefaultsToDeal = (deal) => {
+    const nextPic = effectiveRole === DEFAULT_MASTER_ROLE ? deal.pic || "" : currentAccount;
+    const nextTeam = effectiveRole === DEFAULT_MASTER_ROLE
+      ? inferDealTeam({ ...deal, pic: nextPic }, authConfig, ownerCodes)
+      : effectiveTeam;
+    return { ...deal, pic: nextPic, team: nextTeam };
+  };
+
   const saveDeal = (deal) => {
     const now = new Date().toISOString();
+    const nextDeal = applyAccessDefaultsToDeal(deal);
     if (deal.id) {
       setDeals((p) =>
         p.map((d) => {
           if (d.id !== deal.id) return d;
           const history = Array.isArray(d.stageHistory) ? [...d.stageHistory] : [];
-          if (d.stage !== deal.stage) history.push({ from: d.stage, to: deal.stage, date: now });
-          return { ...deal, stageHistory: history, updatedAt: now };
+          if (d.stage !== nextDeal.stage) history.push({ from: d.stage, to: nextDeal.stage, date: now });
+          return { ...nextDeal, stageHistory: history, updatedAt: now };
         }),
       );
     } else {
       const newDeal = {
-        ...deal,
+        ...nextDeal,
         id: Date.now().toString(),
-        stage: deal.stage || "Data Thô",
+        stage: nextDeal.stage || "Data Thô",
         createdAt: now,
         updatedAt: now,
-        dataInputDate: deal.dataInputDate || now,
-        notes: parseNotes(deal.notes),
-        stageHistory: [{ from: null, to: deal.stage || "Data Thô", date: deal.dataInputDate || now }],
+        dataInputDate: nextDeal.dataInputDate || now,
+        notes: parseNotes(nextDeal.notes),
+        stageHistory: [{ from: null, to: nextDeal.stage || "Data Thô", date: nextDeal.dataInputDate || now }],
       };
       if (ownerMode && !newDeal.pic) newDeal.pic = ownerMode;
       setDeals((p) => [...p, newDeal]);
@@ -848,7 +919,7 @@ export default function App() {
       window.alert("Khong co dong hop le de import. Can it nhat cot Brand.");
       return;
     }
-    setDeals((prev) => [...prev, ...importedDeals]);
+    setDeals((prev) => [...prev, ...importedDeals.map((deal) => applyAccessDefaultsToDeal(deal))]);
     setShowImportModal(false);
     setShowAddOptions(false);
     window.alert(`Da import ${importedDeals.length} deal${skipped ? `, bo qua ${skipped} dong khong hop le` : ""}.`);
@@ -884,6 +955,7 @@ export default function App() {
         await apiRequest("/state", {
           method: "POST",
           body: JSON.stringify({
+            actorOwner: currentAccount,
             ownerCodes,
             deals,
             authConfig: canManageMasterSettings ? authConfig : undefined,
@@ -928,6 +1000,7 @@ export default function App() {
       await apiRequest("/state", {
         method: "POST",
         body: JSON.stringify({
+          actorOwner: currentAccount,
           ownerCodes: isMaster ? normalizedOwners : undefined,
           deals: isMaster ? nextDeals : deals,
           authConfig: isMaster ? normalizedAuth : undefined,
@@ -963,7 +1036,7 @@ export default function App() {
   };
 
   const handleLogin = async (password) => {
-    const localMatch = authConfig[currentAccount] && authConfig[currentAccount] === password;
+    const localMatch = currentAuth.password && currentAuth.password === password;
 
     try {
       const json = await apiRequest("/login", {
@@ -972,7 +1045,11 @@ export default function App() {
       });
       if (json.success) {
         setBackendReady(true);
-        setSessionOwner(currentAccount);
+        setSessionProfile({
+          owner: currentAccount,
+          role: ROLE_OPTIONS.includes(json.role) ? json.role : currentAuth.role,
+          team: TEAM_OPTIONS.includes(json.team) ? json.team : currentAuth.team,
+        });
         return true;
       }
     } catch {
@@ -980,7 +1057,11 @@ export default function App() {
     }
 
     if (localMatch) {
-      setSessionOwner(currentAccount);
+      setSessionProfile({
+        owner: currentAccount,
+        role: currentAuth.role,
+        team: currentAuth.team,
+      });
       return true;
     }
 
@@ -1062,9 +1143,9 @@ export default function App() {
     }
   };
 
-  const logout = () => setSessionOwner("");
+  const logout = () => setSessionProfile(null);
 
-  const visibleDeals = ownerMode ? deals.filter((d) => d.pic === ownerMode) : deals;
+  const visibleDeals = filterDealsByAccess(deals, { owner: currentAccount, role: effectiveRole, team: effectiveTeam });
   const filtered = visibleDeals.filter((d) => {
     const searchText = normalizeSearchText(search);
     const searchPhone = normalizePhoneText(search);
@@ -1106,6 +1187,15 @@ export default function App() {
     win: visibleDeals.filter((d) => d.stage === "Win").length,
     rev: visibleDeals.reduce((s, d) => s + (Number(d.value) || 0), 0),
   };
+  const teamStats = TEAM_OPTIONS.map((team) => {
+    const teamDeals = deals.filter((deal) => deal.team === team);
+    return {
+      team,
+      total: teamDeals.length,
+      win: teamDeals.filter((deal) => deal.stage === "Win").length,
+      rev: teamDeals.reduce((sum, deal) => sum + (Number(deal.value) || 0), 0),
+    };
+  });
   if (requiresLogin && !isAuthenticated) {
     return <LoginScreen owner={currentAccount} onLogin={handleLogin} canFallbackToLocal={hasPasswordForOwner} onOpenSetup={() => window.alert("Sau khi đăng nhập đúng link owner của mình, bạn có thể vào ⚙ để tự cấu hình Telegram cho tài khoản đó.")} />;
   }
@@ -1121,7 +1211,7 @@ export default function App() {
             </div>
             <div>
               <div style={{ fontSize: "16px", fontWeight: "800", color: UI.text }}>Sales Pipeline CRM</div>
-              <div style={{ fontSize: "11px", color: UI.muted, marginTop: "2px" }}>{isMaster ? "Master workspace" : `Owner workspace · ${ownerMode}`}</div>
+              <div style={{ fontSize: "11px", color: UI.muted, marginTop: "2px" }}>{effectiveRole === DEFAULT_MASTER_ROLE ? "Master workspace" : `${effectiveRole} workspace · ${currentAccount}${effectiveTeam ? ` · ${effectiveTeam}` : ""}`}</div>
             </div>
           </div>
 
@@ -1137,7 +1227,7 @@ export default function App() {
           <div style={{ ...cardStyle, padding: "14px", boxShadow: "none" }}>
             <div style={{ fontSize: "11px", fontWeight: "700", color: UI.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "10px" }}>Tài khoản</div>
             <div style={{ fontSize: "14px", fontWeight: "700", color: UI.text }}>{currentAccount}</div>
-            <div style={{ fontSize: "12px", color: UI.muted, marginTop: "4px" }}>{isMaster ? "Quản lý toàn bộ dữ liệu" : "Chỉ xem dữ liệu của mình"}</div>
+            <div style={{ fontSize: "12px", color: UI.muted, marginTop: "4px" }}>{effectiveRole === DEFAULT_MASTER_ROLE ? "Quản lý toàn bộ dữ liệu" : effectiveRole === DEFAULT_MANAGER_ROLE ? `Quản lý dữ liệu team ${effectiveTeam}` : "Chỉ xem dữ liệu của mình"}</div>
           </div>
 
           {isMaster && (
@@ -1198,6 +1288,21 @@ export default function App() {
               ))}
             </div>
 
+            {effectiveRole === DEFAULT_MASTER_ROLE && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "16px", marginBottom: "20px" }}>
+                {teamStats.map((team) => (
+                  <div key={team.team} style={{ ...cardStyle, padding: "16px" }}>
+                    <div style={{ fontSize: "11px", color: UI.muted, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: "700", marginBottom: "10px" }}>{team.team}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "12px" }}>
+                      <div><div style={{ fontSize: "11px", color: UI.muted }}>Deals</div><div style={{ fontSize: "22px", fontWeight: "800", color: UI.primary }}>{team.total}</div></div>
+                      <div><div style={{ fontSize: "11px", color: UI.muted }}>Win</div><div style={{ fontSize: "22px", fontWeight: "800", color: "#16a34a" }}>{team.win}</div></div>
+                      <div><div style={{ fontSize: "11px", color: UI.muted }}>Rev.</div><div style={{ fontSize: "22px", fontWeight: "800", color: "#d97706" }}>{team.rev ? `${(team.rev / 1e6).toFixed(1)}M` : "—"}</div></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {tab === "pipeline" && <KanbanBoard deals={filtered} dragOver={dragOver} setDragOver={setDragOver} draggingId={draggingId} setDraggingId={setDraggingId} moveDeal={moveDeal} onEdit={(d) => setModalDeal(d)} onDelete={deleteDeal} onAdd={(stage) => openAddOptions({ stage, pic: ownerMode || "" })} />}
             {tab === "alerts" && <AlertView alertDeals={alertDeals} onEdit={(deal) => setModalDeal(deal)} />}
             {tab === "report" && <ReportView deals={isMaster ? deals : visibleDeals} ownerCodes={allOwnerCodes} reportFrom={reportFrom} setReportFrom={setReportFrom} reportTo={reportTo} setReportTo={setReportTo} reportPIC={ownerMode || reportPIC} setReportPIC={setReportPIC} isMaster={isMaster} />}
@@ -1207,7 +1312,7 @@ export default function App() {
 
       {showAddOptions && <AddDealOptionsModal preset={addPreset} onSingleAdd={() => { setModalDeal({ stage: addPreset.stage || "Data Thô", pic: addPreset.pic || ownerMode || "" }); setShowAddOptions(false); }} onImport={() => { setShowImportModal(true); setShowAddOptions(false); }} onClose={() => setShowAddOptions(false)} />}
       {showImportModal && <ImportDealsModal preset={addPreset} ownerMode={ownerMode} onDownloadTemplate={exportImportTemplate} onImport={importDeals} onClose={() => setShowImportModal(false)} />}
-      {modalDeal !== null && <DealModal deal={modalDeal} ownerCodes={allOwnerCodes} onSave={saveDeal} onClose={() => setModalDeal(null)} ownerMode={ownerMode} isMaster={isMaster} />}
+      {modalDeal !== null && <DealModal deal={modalDeal} ownerCodes={allOwnerCodes} authConfig={authConfig} onSave={saveDeal} onClose={() => setModalDeal(null)} ownerMode={ownerMode} isMaster={isMaster} currentRole={effectiveRole} currentTeam={effectiveTeam} />}
       {canOpenSettings && showSetup && <SetupModal currentAccount={currentAccount} isMaster={isMaster} ownerCodes={ownerCodes} authConfig={authConfig} telegramConfig={telegramConfig} followupConfig={followupConfig} backendReady={backendReady} onSave={saveSettings} onTestTelegram={testTelegram} onRunScan={runAlertScan} onDownloadBackup={downloadBackup} onRestoreBackup={restoreBackup} onSyncFromOnline={syncFromOnline} onClose={() => setShowSetup(false)} />}
     </div>
   );
@@ -1938,15 +2043,19 @@ function ImportDealsModal({ preset, ownerMode, onDownloadTemplate, onImport, onC
   );
 }
 
-function DealModal({ deal, ownerCodes, onSave, onClose, ownerMode, isMaster }) {
+function DealModal({ deal, ownerCodes, authConfig, onSave, onClose, ownerMode, isMaster, currentRole, currentTeam }) {
   const isNew = !deal.id;
   const initDate = deal.dataInputDate ? toDisplayDate(deal.dataInputDate) : isNew ? toDisplayDate(new Date().toISOString()) : "";
   const initMeeting = deal.lastMeeting ? toDisplayDate(deal.lastMeeting) : "";
-  const [f, setF] = useState({ brand: "", contact: "", phone: "", ado: "", platform: [], stage: "Data Thô", pic: ownerMode || "", source: "", value: "", maKH: "", bangGia: "", ...deal, deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "", notes: parseNotes(deal.notes) });
+  const [f, setF] = useState({ brand: "", contact: "", phone: "", ado: "", team: currentRole === DEFAULT_MASTER_ROLE ? "" : currentTeam, platform: [], stage: "Data Thô", pic: ownerMode || "", source: "", value: "", maKH: "", bangGia: "", ...deal, deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "", notes: parseNotes(deal.notes) });
   const [dateInput, setDateInput] = useState(initDate);
   const [meetingInput, setMeetingInput] = useState(initMeeting);
   const [newNote, setNewNote] = useState("");
   const s = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const syncPicForMaster = (pic) => {
+    const nextTeam = getAuthEntry(authConfig, pic, ownerCodes.filter((code) => code !== MASTER_OWNER)).team || "";
+    setF((p) => ({ ...p, pic, team: currentRole === DEFAULT_MASTER_ROLE ? nextTeam : p.team }));
+  };
   const togglePlatform = (p) => s("platform", f.platform.includes(p) ? f.platform.filter((x) => x !== p) : [...f.platform, p]);
   const addNote = () => {
     if (!newNote.trim()) return;
@@ -1993,14 +2102,24 @@ function DealModal({ deal, ownerCodes, onSave, onClose, ownerMode, isMaster }) {
           </FormBlock>
 
           <FormBlock title="BD phụ trách">
-            <Field label="BD P.I.C">
-              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                {ownerCodes.map((p) => {
-                  const active = f.pic === p;
-                  return <button key={p} onClick={() => (!ownerMode || isMaster) && s("pic", active ? "" : p)} style={{ background: active ? "#e8f3fc" : "#f4f8fc", border: `1.5px solid ${active ? "#90c0ef" : "#dde6f0"}`, borderRadius: "8px", padding: "5px 12px", color: active ? "#1a6fba" : "#90a8c0", fontSize: "12px", fontWeight: active ? "700" : "400", cursor: !ownerMode || isMaster ? "pointer" : "default", fontFamily: "inherit", opacity: ownerMode && !isMaster && !active ? 0.4 : 1 }}>{p}</button>;
-                })}
-              </div>
-            </Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "13px" }}>
+              <Field label="BD P.I.C" span>
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  {ownerCodes.map((p) => {
+                    const active = f.pic === p;
+                    return <button key={p} onClick={() => (!ownerMode || isMaster) && syncPicForMaster(active ? "" : p)} style={{ background: active ? "#e8f3fc" : "#f4f8fc", border: `1.5px solid ${active ? "#90c0ef" : "#dde6f0"}`, borderRadius: "8px", padding: "5px 12px", color: active ? "#1a6fba" : "#90a8c0", fontSize: "12px", fontWeight: active ? "700" : "400", cursor: !ownerMode || isMaster ? "pointer" : "default", fontFamily: "inherit", opacity: ownerMode && !isMaster && !active ? 0.4 : 1 }}>{p}</button>;
+                  })}
+                </div>
+              </Field>
+              {currentRole === DEFAULT_MASTER_ROLE && (
+                <Field label="Team">
+                  <select value={f.team || ""} onChange={(e) => s("team", e.target.value)} style={dropdownStyle(f.team)}>
+                    <option value="">Chọn team</option>
+                    {TEAM_OPTIONS.map((team) => <option key={team} value={team}>{team}</option>)}
+                  </select>
+                </Field>
+              )}
+            </div>
           </FormBlock>
 
           <FormBlock title="Trạng thái deal" highlight>
@@ -2157,17 +2276,38 @@ function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegram
 
         {isMaster && (
           <div style={{ background: "#fff8e6", border: "1px solid #f0cc80", borderRadius: "10px", padding: "14px", marginBottom: "14px" }}>
-            <div style={{ fontSize: "11px", color: "#b86e00", fontWeight: "700", marginBottom: "10px" }}>Mật khẩu tài khoản owner</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+            <div style={{ fontSize: "11px", color: "#b86e00", fontWeight: "700", marginBottom: "10px" }}>Tài khoản owner, vai trò và team</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: "10px" }}>
               {allLocalOwners.map((pic) => (
                 <div key={pic}>
                   <div style={{ fontSize: "11px", color: "#6080a0", marginBottom: "4px", fontWeight: "600" }}>{pic}</div>
-                  <Inp type="text" value={localAuth[pic] || ""} onChange={(value) => setLocalAuth((prev) => ({ ...prev, [pic]: value }))} placeholder={`Mật khẩu cho ${pic}`} />
+                  <div style={{ display: "grid", gap: "6px" }}>
+                    <Inp type="text" value={localAuth[pic]?.password || ""} onChange={(value) => setLocalAuth((prev) => ({ ...prev, [pic]: { ...prev[pic], password: value } }))} placeholder={`Mật khẩu cho ${pic}`} />
+                    <select
+                      value={localAuth[pic]?.role || (pic === MASTER_OWNER ? DEFAULT_MASTER_ROLE : DEFAULT_USER_ROLE)}
+                      onChange={(e) => setLocalAuth((prev) => ({ ...prev, [pic]: { ...prev[pic], role: pic === MASTER_OWNER ? DEFAULT_MASTER_ROLE : e.target.value } }))}
+                      disabled={pic === MASTER_OWNER}
+                      style={dropdownStyle(localAuth[pic]?.role)}
+                    >
+                      {(pic === MASTER_OWNER ? [DEFAULT_MASTER_ROLE] : [DEFAULT_USER_ROLE, DEFAULT_MANAGER_ROLE]).map((role) => (
+                        <option key={role} value={role}>{role}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={localAuth[pic]?.team || ""}
+                      onChange={(e) => setLocalAuth((prev) => ({ ...prev, [pic]: { ...prev[pic], team: pic === MASTER_OWNER ? "" : e.target.value } }))}
+                      disabled={pic === MASTER_OWNER}
+                      style={dropdownStyle(localAuth[pic]?.team)}
+                    >
+                      <option value="">{pic === MASTER_OWNER ? "Không áp dụng team" : "Chọn team"}</option>
+                      {TEAM_OPTIONS.map((team) => <option key={team} value={team}>{team}</option>)}
+                    </select>
+                  </div>
                 </div>
               ))}
             </div>
             <div style={{ fontSize: "11px", color: "#8a6d1f", lineHeight: 1.6, marginTop: "10px" }}>
-              Username cố định là mã owner như <b>GIP01</b>, <b>GIP02</b>. Bấm lưu để backend local cập nhật ngay, không cần Google Apps Script.
+              Username cố định là mã owner như <b>GIP01</b>, <b>GIP02</b>. USER chỉ thấy deal của mình, MANAGER thấy deal theo team, MASTER thấy toàn bộ dữ liệu.
             </div>
           </div>
         )}

@@ -15,6 +15,10 @@ const BACKUP_DIR = resolve(__dirname, process.env.BACKUP_DIR || "backups");
 const BACKUP_VERSION = "crm-backup-v1";
 const MASTER_OWNER = "GIPMANA";
 const DEFAULT_OWNER_CODES = ["GIP01", "GIP02", "GIP03", "GIP04", "GIP05", "GIP06"];
+const TEAM_OPTIONS = ["PKD1", "PKD2"];
+const USER_ROLE = "USER";
+const MANAGER_ROLE = "MANAGER";
+const MASTER_ROLE = "MASTER";
 const STAGES = ["Data Thô", "Freeze", "Cold", "Warm", "Hot", "Win"];
 const DEAL_STATUS_OPTIONS = [
   "New Lead",
@@ -414,12 +418,74 @@ function buildAllOwnerCodes(ownerCodes) {
   return [MASTER_OWNER, ...normalizeOwnerCodes(ownerCodes)];
 }
 
+function getDefaultTeamForOwner(pic, ownerCodes = DEFAULT_OWNER_CODES) {
+  if (!pic || pic === MASTER_OWNER) return "";
+  const normalizedOwners = normalizeOwnerCodes(ownerCodes);
+  const index = normalizedOwners.indexOf(pic);
+  if (index === -1) return TEAM_OPTIONS[0];
+  const pivot = Math.ceil(normalizedOwners.length / TEAM_OPTIONS.length);
+  return index < pivot ? "PKD1" : "PKD2";
+}
+
+function normalizeRoleValue(value, pic) {
+  if (pic === MASTER_OWNER) return MASTER_ROLE;
+  return value === MANAGER_ROLE ? MANAGER_ROLE : USER_ROLE;
+}
+
+function normalizeTeamValue(value, pic, ownerCodes = DEFAULT_OWNER_CODES) {
+  if (pic === MASTER_OWNER) return "";
+  return TEAM_OPTIONS.includes(value) ? value : getDefaultTeamForOwner(pic, ownerCodes);
+}
+
+function normalizeAuthEntry(value, pic, ownerCodes = DEFAULT_OWNER_CODES) {
+  if (typeof value === "string") {
+    return {
+      password: value,
+      role: normalizeRoleValue(undefined, pic),
+      team: normalizeTeamValue(undefined, pic, ownerCodes),
+    };
+  }
+  return {
+    password: typeof value?.password === "string" ? value.password : "",
+    role: normalizeRoleValue(value?.role, pic),
+    team: normalizeTeamValue(value?.team, pic, ownerCodes),
+  };
+}
+
+function getAuthEntry(authConfig, owner, ownerCodes = DEFAULT_OWNER_CODES) {
+  return normalizeAuthEntry(authConfig?.[owner], owner, ownerCodes);
+}
+
+function getAccessProfile(state, owner) {
+  if (!owner) {
+    return { owner: MASTER_OWNER, role: MASTER_ROLE, team: "" };
+  }
+  const entry = getAuthEntry(state.authConfig, owner, state.ownerCodes);
+  return { owner, role: entry.role, team: entry.team };
+}
+
+function filterDealsByAccess(deals, access) {
+  if (access.role === MASTER_ROLE) return deals;
+  if (access.role === MANAGER_ROLE) return deals.filter((deal) => deal.team === access.team);
+  return deals.filter((deal) => deal.pic === access.owner);
+}
+
+function mergeDealsByAccess(currentDeals, incomingDeals, access) {
+  if (access.role === MASTER_ROLE) return incomingDeals;
+  const keepCurrent = currentDeals.filter((deal) => {
+    if (access.role === MANAGER_ROLE) return deal.team !== access.team;
+    return deal.pic !== access.owner;
+  });
+  const allowedIncoming = filterDealsByAccess(incomingDeals, access);
+  return [...keepCurrent, ...allowedIncoming];
+}
+
 function makeDefaultState() {
   const ownerCodes = [...DEFAULT_OWNER_CODES];
   return {
     ownerCodes,
     deals: [],
-    authConfig: Object.fromEntries(buildAllOwnerCodes(ownerCodes).map((pic) => [pic, "" ])),
+    authConfig: Object.fromEntries(buildAllOwnerCodes(ownerCodes).map((pic) => [pic, normalizeAuthEntry(null, pic, ownerCodes)])),
     telegramConfig: Object.fromEntries(buildAllOwnerCodes(ownerCodes).map((pic) => [pic, { botToken: "", chatId: "" }])),
     followupConfig: { ...FOLLOWUP_HOURS_DEFAULT },
     alertLog: {},
@@ -450,10 +516,10 @@ function saveState(nextState) {
 function normalizeState(raw) {
   const base = makeDefaultState();
   const ownerCodes = normalizeOwnerCodes(raw?.ownerCodes);
-  const deals = Array.isArray(raw?.deals) ? raw.deals.map(normalizeDeal).filter(Boolean) : [];
+  let deals = Array.isArray(raw?.deals) ? raw.deals.map(normalizeDeal).filter(Boolean) : [];
   const authConfig = { ...base.authConfig };
   buildAllOwnerCodes(ownerCodes).forEach((pic) => {
-    authConfig[pic] = typeof raw?.authConfig?.[pic] === "string" ? raw.authConfig[pic] : "";
+    authConfig[pic] = normalizeAuthEntry(raw?.authConfig?.[pic], pic, ownerCodes);
   });
   const telegramConfig = { ...base.telegramConfig };
   buildAllOwnerCodes(ownerCodes).forEach((pic) => {
@@ -468,6 +534,10 @@ function normalizeState(raw) {
     if (Number.isFinite(value) && value >= 0) followupConfig[stage] = value;
   });
   const alertLog = raw?.alertLog && typeof raw.alertLog === "object" ? raw.alertLog : {};
+  deals = deals.map((deal) => ({
+    ...deal,
+    team: TEAM_OPTIONS.includes(deal.team) ? deal.team : getAuthEntry(authConfig, deal.pic, ownerCodes).team,
+  }));
 
   return {
     ownerCodes,
@@ -489,6 +559,7 @@ function normalizeDeal(deal) {
     contact: typeof deal.contact === "string" ? deal.contact : "",
     phone: typeof deal.phone === "string" ? deal.phone : "",
     ado: deal?.ado === null || deal?.ado === undefined ? "" : String(deal.ado),
+    team: TEAM_OPTIONS.includes(deal.team) ? deal.team : "",
     platform: normalizePlatformList(Array.isArray(deal.platform) ? deal.platform.filter(Boolean) : typeof deal.platform === "string" && deal.platform ? [deal.platform] : []),
     stage: STAGES.includes(deal.stage) ? deal.stage : "Data Thô",
     pic: typeof deal.pic === "string" ? deal.pic : "",
@@ -775,8 +846,9 @@ async function route(req, res) {
   if (req.method === "GET" && url.pathname === "/api/state") {
     const state = loadState();
     const owner = String(url.searchParams.get("owner") || "");
+    const access = getAccessProfile(state, owner);
     const visibleAuthConfig = owner && owner !== MASTER_OWNER
-      ? { [owner]: state.authConfig?.[owner] || "" }
+      ? { [owner]: state.authConfig?.[owner] || normalizeAuthEntry(null, owner, state.ownerCodes) }
       : state.authConfig;
     const visibleTelegramConfig = owner
       ? { [owner]: state.telegramConfig?.[owner] || { botToken: "", chatId: "" } }
@@ -784,10 +856,11 @@ async function route(req, res) {
     sendJson(res, 200, {
       ok: true,
       ownerCodes: state.ownerCodes,
-      deals: state.deals,
+      deals: filterDealsByAccess(state.deals, access),
       authConfig: visibleAuthConfig,
       telegramConfig: visibleTelegramConfig,
       followupConfig: state.followupConfig,
+      currentUser: access,
       updatedAt: state.updatedAt,
     });
     return;
@@ -797,6 +870,8 @@ async function route(req, res) {
     const body = await readBody(req);
     if (body.deals !== undefined) validateDealsPayload(body.deals);
     const current = loadState();
+    const actorOwner = String(body.actorOwner || MASTER_OWNER);
+    const access = getAccessProfile(current, actorOwner);
     const mergedAuthConfig = body.authConfig ? { ...current.authConfig, ...body.authConfig } : current.authConfig;
     const mergedTelegramConfig = body.telegramConfig
       ? {
@@ -815,7 +890,7 @@ async function route(req, res) {
     const next = saveState({
       ...current,
       ownerCodes: body.ownerCodes || current.ownerCodes,
-      deals: Array.isArray(body.deals) ? body.deals : current.deals,
+      deals: Array.isArray(body.deals) ? mergeDealsByAccess(current.deals, body.deals, access) : current.deals,
       authConfig: mergedAuthConfig,
       telegramConfig: mergedTelegramConfig,
       followupConfig: body.followupConfig || current.followupConfig,
@@ -830,7 +905,8 @@ async function route(req, res) {
     const state = loadState();
     const owner = String(body.owner || "");
     const password = String(body.password || "");
-    sendJson(res, 200, { ok: true, success: !!owner && state.authConfig?.[owner] === password });
+    const authEntry = getAuthEntry(state.authConfig, owner, state.ownerCodes);
+    sendJson(res, 200, { ok: true, success: !!owner && authEntry.password === password, role: authEntry.role, team: authEntry.team });
     return;
   }
 
