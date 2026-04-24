@@ -36,6 +36,8 @@ const DEAL_STATUS_OPTIONS = [
   "Can't Contact",
 ];
 const PLATFORMS = ["Facebook", "Shopee", "Tiktok", "Lazada", "Khác"];
+const LEAD_SOURCE_TYPE_OPTIONS = ["Cá nhân", "Công ty", "Sếp Loki"];
+const LEAD_SOURCE_DETAIL_OPTIONS = ["Facebook", "Zalo", "Group", "Khách giới thiệu", "Website", "Fanpage", "Tiktok", "Khác"];
 const PLATFORM_ALIASES = {
   facebook: "Facebook",
   fb: "Facebook",
@@ -245,11 +247,38 @@ function normalizePlatformList(values) {
   return [...new Set(source.map((value) => normalizePlatformValue(value)).filter(Boolean))];
 }
 
+function normalizeLeadSourceType(value) {
+  return LEAD_SOURCE_TYPE_OPTIONS.includes(value) ? value : "";
+}
+
+function normalizeLeadSourceDetail(value) {
+  return LEAD_SOURCE_DETAIL_OPTIONS.includes(value) ? value : "";
+}
+
+function buildLeadSource(type, detail) {
+  if (type && detail) return `${type} - ${detail}`;
+  return detail || type || "";
+}
+
+function parseLegacyLeadSource(rawValue) {
+  const text = String(rawValue || "").trim();
+  if (!text) return { lead_source_type: "", lead_source_detail: "", source: "" };
+  const matched = text.match(/^(.*?)\s*-\s*(.*?)$/);
+  if (matched) {
+    const lead_source_type = normalizeLeadSourceType(matched[1].trim());
+    const lead_source_detail = normalizeLeadSourceDetail(matched[2].trim());
+    return { lead_source_type, lead_source_detail, source: text };
+  }
+  return { lead_source_type: "", lead_source_detail: normalizeLeadSourceDetail(text), source: text };
+}
+
 function validateDealsPayload(deals) {
   if (!Array.isArray(deals)) throw new Error("deals_invalid");
   for (const deal of deals) {
     if (!deal || typeof deal !== "object") throw new Error("deal_invalid");
     if (!isValidDealStatus(deal.deal_status)) throw new Error("deal_status_invalid");
+    if (deal.lead_source_type !== undefined && deal.lead_source_type !== null && deal.lead_source_type !== "" && !normalizeLeadSourceType(deal.lead_source_type)) throw new Error("lead_source_type_invalid");
+    if (deal.lead_source_detail !== undefined && deal.lead_source_detail !== null && deal.lead_source_detail !== "" && !normalizeLeadSourceDetail(deal.lead_source_detail)) throw new Error("lead_source_detail_invalid");
   }
 }
 
@@ -603,6 +632,10 @@ function normalizeState(raw, options = {}) {
 
 function normalizeDeal(deal) {
   if (!deal || typeof deal !== "object") return null;
+  const legacySource = parseLegacyLeadSource(deal.lead_source || deal.source);
+  const lead_source_type = normalizeLeadSourceType(deal.lead_source_type) || legacySource.lead_source_type;
+  const lead_source_detail = normalizeLeadSourceDetail(deal.lead_source_detail) || legacySource.lead_source_detail;
+  const source = buildLeadSource(lead_source_type, lead_source_detail) || legacySource.source;
   return {
     ...deal,
     id: String(deal.id || Date.now()),
@@ -614,7 +647,10 @@ function normalizeDeal(deal) {
     platform: normalizePlatformList(Array.isArray(deal.platform) ? deal.platform.filter(Boolean) : typeof deal.platform === "string" && deal.platform ? [deal.platform] : []),
     stage: STAGES.includes(deal.stage) ? deal.stage : "Data Thô",
     pic: typeof deal.pic === "string" ? deal.pic : "",
-    source: typeof deal.source === "string" ? deal.source : "",
+    lead_source_type,
+    lead_source_detail,
+    lead_source: source,
+    source,
     value: Number(deal.value) || 0,
     maKH: typeof deal.maKH === "string" ? deal.maKH : "",
     bangGia: typeof deal.bangGia === "string" ? deal.bangGia : "",

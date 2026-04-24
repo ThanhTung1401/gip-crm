@@ -38,10 +38,8 @@ const DEFAULT_USER_ROLE = "USER";
 const DEFAULT_MANAGER_ROLE = "MANAGER";
 const DEFAULT_MASTER_ROLE = "MASTER";
 const BANG_GIA = ["GP01", "GP02", "GP03", "Enterprise", "Custom"];
-const SOURCE_GROUPS = {
-  "Cá nhân": ["Facebook", "Zalo", "Group", "Khách giới thiệu", "Khác"],
-  "Sếp Loki": ["Facebook", "Zalo", "Group", "Khách giới thiệu", "Khác"],
-};
+const LEAD_SOURCE_TYPE_OPTIONS = ["Cá nhân", "Công ty", "Sếp Loki"];
+const LEAD_SOURCE_DETAIL_OPTIONS = ["Facebook", "Zalo", "Group", "Khách giới thiệu", "Website", "Fanpage", "Tiktok", "Khác"];
 
 const SLA_DAYS = {
   "Data Thô": 15,
@@ -330,6 +328,28 @@ const DEFAULT_API_BASE =
     ? "http://127.0.0.1:8787/api"
     : `${typeof window !== "undefined" ? window.location.origin : ""}/api`;
 const API_BASE = String(import.meta.env.VITE_API_BASE || DEFAULT_API_BASE).replace(/\/+$/, "");
+const normalizeLeadSourceType = (value) => (LEAD_SOURCE_TYPE_OPTIONS.includes(value) ? value : "");
+const normalizeLeadSourceDetail = (value) => (LEAD_SOURCE_DETAIL_OPTIONS.includes(value) ? value : "");
+const buildLeadSource = (type, detail) => (type && detail ? `${type} - ${detail}` : detail || type || "");
+const parseLegacyLeadSource = (rawValue) => {
+  const text = String(rawValue || "").trim();
+  if (!text) return { lead_source_type: "", lead_source_detail: "", source: "" };
+  const matched = text.match(/^(.*?)\s*-\s*(.*?)$/);
+  if (matched) {
+    const lead_source_type = normalizeLeadSourceType(matched[1].trim());
+    const lead_source_detail = normalizeLeadSourceDetail(matched[2].trim()) || matched[2].trim();
+    return {
+      lead_source_type,
+      lead_source_detail: LEAD_SOURCE_DETAIL_OPTIONS.includes(lead_source_detail) ? lead_source_detail : "",
+      source: text,
+    };
+  }
+  return {
+    lead_source_type: "",
+    lead_source_detail: normalizeLeadSourceDetail(text),
+    source: text,
+  };
+};
 
 const normalizeDeals = (rawDeals) =>
   Array.isArray(rawDeals)
@@ -337,6 +357,17 @@ const normalizeDeals = (rawDeals) =>
         ...deal,
         ado: deal?.ado === null || deal?.ado === undefined ? "" : String(deal.ado),
         team: TEAM_OPTIONS.includes(deal?.team) ? deal.team : "",
+        ...(() => {
+          const legacy = parseLegacyLeadSource(deal?.lead_source || deal?.source);
+          const lead_source_type = normalizeLeadSourceType(deal?.lead_source_type) || legacy.lead_source_type;
+          const lead_source_detail = normalizeLeadSourceDetail(deal?.lead_source_detail) || legacy.lead_source_detail;
+          return {
+            lead_source_type,
+            lead_source_detail,
+            lead_source: buildLeadSource(lead_source_type, lead_source_detail) || legacy.source,
+            source: buildLeadSource(lead_source_type, lead_source_detail) || legacy.source,
+          };
+        })(),
         platform: normalizePlatformList(Array.isArray(deal.platform) ? deal.platform : deal.platform ? [deal.platform] : []),
         deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "",
         notes: parseNotes(deal.notes),
@@ -488,7 +519,7 @@ const buildGipRankingReport = (deals) =>
 const exportExcel = (deals, reportMonth) => {
   const wb = XLSX.utils.book_new();
   const ws1 = XLSX.utils.aoa_to_sheet([
-    ["Brand", "Contact", "Phone", "ADO", "Platform", "Stage", "Deal Status", "PIC", "Source", "Value", "Mã KH", "Bảng giá", "Ngày nhập data", "Gặp lần cuối", "Ghi chú gần nhất", "Ngày tạo"],
+    ["Brand", "Contact", "Phone", "ADO", "Lead Source Type", "Lead Source Detail", "Source", "Platform", "Stage", "Deal Status", "PIC", "Value", "Mã KH", "Bảng giá", "Ngày nhập data", "Gặp lần cuối", "Ghi chú gần nhất", "Ngày tạo"],
     ...deals.map((d) => {
       const notes = parseNotes(d.notes);
       return [
@@ -496,11 +527,13 @@ const exportExcel = (deals, reportMonth) => {
         d.contact,
         d.phone,
         d.ado || "",
+        d.lead_source_type || "",
+        d.lead_source_detail || "",
+        d.source || "",
         Array.isArray(d.platform) ? d.platform.join(", ") : d.platform,
         d.stage,
         d.deal_status || "",
         d.pic || "",
-        d.source,
         Number(d.value) || 0,
         d.maKH || "",
         d.bangGia || "",
@@ -511,7 +544,7 @@ const exportExcel = (deals, reportMonth) => {
       ];
     }),
   ]);
-  ws1["!cols"] = [18, 16, 14, 10, 18, 12, 20, 10, 18, 14, 12, 10, 14, 14, 30, 12].map((w) => ({ wch: w }));
+  ws1["!cols"] = [18, 16, 14, 10, 14, 16, 20, 18, 12, 20, 10, 14, 12, 10, 14, 14, 30, 12].map((w) => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws1, "Tất cả Deals");
 
   const ws2 = XLSX.utils.aoa_to_sheet([
@@ -587,7 +620,9 @@ const importHeaderAliases = {
   stage: ["stage", "giaidoan", "pipeline", "trangthai"],
   deal_status: ["dealstatus", "deal_status", "trangthaideal", "statusdeal"],
   pic: ["pic", "bdpic", "owner", "sale"],
-  source: ["source", "nguon", "nguonlead"],
+  lead_source_type: ["leadsourcetype", "lead_source_type", "source_type", "loainguon", "loai nguon"],
+  lead_source_detail: ["leadsourcedetail", "lead_source_detail", "source_detail", "nguonchitiet", "nguon chi tiet"],
+  source: ["source", "nguon", "nguonlead", "leadsource", "lead source", "nguonkhach", "nguon khach"],
   value: ["value", "giatri", "doanhthu", "amount"],
   maKH: ["makh", "makhachhang", "customerid"],
   bangGia: ["banggia", "pricebook", "goi", "package"],
@@ -632,6 +667,13 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
         .map((item) => item.trim())
         .filter(Boolean),
     );
+    const rawLeadSourceType = String(getImportValue(normalizedRow, importHeaderAliases.lead_source_type) || "").trim();
+    const rawLeadSourceDetail = String(getImportValue(normalizedRow, importHeaderAliases.lead_source_detail) || "").trim();
+    const rawSource = String(getImportValue(normalizedRow, importHeaderAliases.source) || "").trim();
+    const legacySource = parseLegacyLeadSource(rawSource);
+    const lead_source_type = normalizeLeadSourceType(rawLeadSourceType) || legacySource.lead_source_type || "";
+    const lead_source_detail = normalizeLeadSourceDetail(rawLeadSourceDetail) || legacySource.lead_source_detail || "";
+    const source = buildLeadSource(lead_source_type, lead_source_detail) || legacySource.source || rawSource;
     const noteText = String(getImportValue(normalizedRow, importHeaderAliases.notes) || "").trim();
     const dataInputDate = parseExcelDateToISO(getImportValue(normalizedRow, importHeaderAliases.dataInputDate)) || now;
     const lastMeeting = parseExcelDateToISO(getImportValue(normalizedRow, importHeaderAliases.lastMeeting)) || "";
@@ -646,7 +688,10 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
       stage,
       deal_status,
       pic,
-      source: String(getImportValue(normalizedRow, importHeaderAliases.source) || "").trim(),
+      lead_source_type,
+      lead_source_detail,
+      lead_source: source,
+      source,
       value: String(getImportValue(normalizedRow, importHeaderAliases.value) || "").trim(),
       maKH: String(getImportValue(normalizedRow, importHeaderAliases.maKH) || "").trim(),
       bangGia: String(getImportValue(normalizedRow, importHeaderAliases.bangGia) || "").trim(),
@@ -665,10 +710,10 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
 const exportImportTemplate = () => {
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet([
-    ["Brand", "Contact", "Phone", "ADO", "Source", "Platform", "DataInputDate", "PIC", "Stage", "Deal Status", "Value", "MaKH", "BangGia", "LastMeeting", "Notes"],
-    ["Cafune", "Linh", "0901234567", "120", "Facebook", "Facebook, Shopee", "14/04/2026", "GIP01", "Data Thô", "New Lead", "50000000", "", "", "", "Khách mới, cần gọi tư vấn"],
+    ["Brand", "Contact", "Phone", "ADO", "Lead Source Type", "Lead Source Detail", "Source", "Platform", "DataInputDate", "PIC", "Stage", "Deal Status", "Value", "MaKH", "BangGia", "LastMeeting", "Notes"],
+    ["Cafune", "Linh", "0901234567", "120", "Cá nhân", "Facebook", "Cá nhân - Facebook", "Facebook, Shopee", "14/04/2026", "GIP01", "Data Thô", "New Lead", "50000000", "", "", "", "Khách mới, cần gọi tư vấn"],
   ]);
-  ws["!cols"] = [18, 16, 14, 10, 16, 20, 14, 10, 12, 20, 14, 12, 12, 14, 30].map((w) => ({ wch: w }));
+  ws["!cols"] = [18, 16, 14, 10, 16, 16, 20, 20, 14, 10, 12, 20, 14, 12, 12, 14, 30].map((w) => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, "Mau Import");
 
   const guide = XLSX.utils.aoa_to_sheet([
@@ -676,10 +721,13 @@ const exportImportTemplate = () => {
     ["1. Giữ nguyên hàng tiêu đề ở sheet Mẫu Import"],
     ["2. Date dùng dd/mm/yyyy hoặc yyyy-mm-dd"],
     ["3. ADO = so don trung binh moi ngay"],
-    [`4. Platform hợp lệ: ${PLATFORMS.join(", ")}. Có thể nhập nhiều giá trị, ngăn cách bằng dấu phẩy`],
-    ["5. Stage hợp lệ: Data Thô, Freeze, Cold, Warm, Hot, Win"],
-    [`6. Deal Status hợp lệ: ${DEAL_STATUS_OPTIONS.join(", ")}`],
-    ["7. Nếu import từ link owner, PIC sẽ tự khóa theo owner đó"],
+    [`4. Lead Source Type hợp lệ: ${LEAD_SOURCE_TYPE_OPTIONS.join(", ")}`],
+    [`5. Lead Source Detail hợp lệ: ${LEAD_SOURCE_DETAIL_OPTIONS.join(", ")}`],
+    ["6. Nếu chỉ có cột Source/Nguồn khách, hệ thống sẽ tự tách format 'Loại - Chi tiết'"],
+    [`7. Platform hợp lệ: ${PLATFORMS.join(", ")}. Có thể nhập nhiều giá trị, ngăn cách bằng dấu phẩy`],
+    ["8. Stage hợp lệ: Data Thô, Freeze, Cold, Warm, Hot, Win"],
+    [`9. Deal Status hợp lệ: ${DEAL_STATUS_OPTIONS.join(", ")}`],
+    ["10. Nếu import từ link owner, PIC sẽ tự khóa theo owner đó"],
   ]);
   guide["!cols"] = [{ wch: 70 }];
   XLSX.utils.book_append_sheet(wb, guide, "Huong Dan");
@@ -1427,7 +1475,11 @@ function DealCard({ deal, cfg, isDragging, onDragStart, onDragEnd, onEdit, onDel
 
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: "8px", alignItems: "center", gap: "8px" }}>
         {deal.value ? <span style={{ fontSize: "10px", color: "#b86e00", fontWeight: "800", whiteSpace: "nowrap" }}>{Number(deal.value) >= 1e6 ? `${(Number(deal.value) / 1e6).toFixed(0)}M` : Number(deal.value).toLocaleString()}₫</span> : <span />}
-        {deal.source && <span title={deal.source} style={{ fontSize: "9px", color: "#90a8c0", maxWidth: "72px", textAlign: "right", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{deal.source}</span>}
+        <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {deal.lead_source_type && <span title={deal.lead_source_type} style={{ background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: "999px", padding: "1px 6px", fontSize: "9px", color: "#4338ca", fontWeight: "700" }}>{deal.lead_source_type}</span>}
+          {deal.lead_source_detail && <span title={deal.lead_source_detail} style={{ background: "#ecfeff", border: "1px solid #a5f3fc", borderRadius: "999px", padding: "1px 6px", fontSize: "9px", color: "#155e75", fontWeight: "700" }}>{deal.lead_source_detail}</span>}
+          {!deal.lead_source_type && !deal.lead_source_detail && deal.source && <span title={deal.source} style={{ fontSize: "9px", color: "#90a8c0", maxWidth: "72px", textAlign: "right", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{deal.source}</span>}
+        </div>
       </div>
 
       {notes.length > 0 && <div style={{ marginTop: "7px", background: "#f8f9fb", borderRadius: "8px", padding: "5px 7px", fontSize: "9px", color: "#6080a0", borderLeft: `2px solid ${cfg.border}`, lineHeight: 1.35 }}>💬 {notes[notes.length - 1].text.length > 32 ? `${notes[notes.length - 1].text.slice(0, 32)}...` : notes[notes.length - 1].text}</div>}
@@ -2050,7 +2102,8 @@ function DealModal({ deal, ownerCodes, authConfig, onSave, onClose, ownerMode, i
   const isNew = !deal.id;
   const initDate = deal.dataInputDate ? toDisplayDate(deal.dataInputDate) : isNew ? toDisplayDate(new Date().toISOString()) : "";
   const initMeeting = deal.lastMeeting ? toDisplayDate(deal.lastMeeting) : "";
-  const [f, setF] = useState({ brand: "", contact: "", phone: "", ado: "", team: currentRole === DEFAULT_MASTER_ROLE ? "" : currentTeam, platform: [], stage: "Data Thô", pic: ownerMode || "", source: "", value: "", maKH: "", bangGia: "", ...deal, deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "", notes: parseNotes(deal.notes) });
+  const sourceLegacy = parseLegacyLeadSource(deal?.lead_source || deal?.source);
+  const [f, setF] = useState({ brand: "", contact: "", phone: "", ado: "", team: currentRole === DEFAULT_MASTER_ROLE ? "" : currentTeam, platform: [], stage: "Data Thô", pic: ownerMode || "", lead_source_type: sourceLegacy.lead_source_type, lead_source_detail: sourceLegacy.lead_source_detail, source: sourceLegacy.source, lead_source: sourceLegacy.source, value: "", maKH: "", bangGia: "", ...deal, deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "", notes: parseNotes(deal.notes) });
   const [dateInput, setDateInput] = useState(initDate);
   const [meetingInput, setMeetingInput] = useState(initMeeting);
   const [newNote, setNewNote] = useState("");
@@ -2071,7 +2124,10 @@ function DealModal({ deal, ownerCodes, authConfig, onSave, onClose, ownerMode, i
     if (!f.brand.trim()) return window.alert("Vui lòng nhập tên Brand!");
     const isoDate = toISODate(dateInput) || new Date().toISOString();
     const isoMeeting = toISODate(meetingInput) || "";
-    onSave({ ...f, dataInputDate: isoDate, lastMeeting: isoMeeting });
+    const lead_source_type = normalizeLeadSourceType(f.lead_source_type);
+    const lead_source_detail = normalizeLeadSourceDetail(f.lead_source_detail);
+    const source = buildLeadSource(lead_source_type, lead_source_detail) || String(f.source || "").trim();
+    onSave({ ...f, lead_source_type, lead_source_detail, lead_source: source, source, dataInputDate: isoDate, lastMeeting: isoMeeting });
   };
 
   return (
@@ -2085,10 +2141,33 @@ function DealModal({ deal, ownerCodes, authConfig, onSave, onClose, ownerMode, i
               <Field label="Người liên hệ"><Inp value={f.contact} onChange={(v) => s("contact", v)} placeholder="Tên người phụ trách" /></Field>
               <Field label="Số điện thoại"><Inp value={f.phone} onChange={(v) => s("phone", v)} placeholder="0901..." /></Field>
               <Field label="ADO"><Inp value={f.ado || ""} onChange={(v) => s("ado", v)} placeholder="Số đơn/ngày" type="number" /></Field>
-              <Field label="Nguồn khách">
-                <select value={f.source} onChange={(e) => s("source", e.target.value)} style={dropdownStyle(f.source)}>
-                  <option value="">Chọn nguồn...</option>
-                  {Object.entries(SOURCE_GROUPS).map(([group, items]) => <optgroup key={group} label={`── ${group}`}>{items.map((src) => <option key={`${group}-${src}`} value={`${group}: ${src}`}>{src}</option>)}</optgroup>)}
+              <Field label="Loại nguồn">
+                <select
+                  value={f.lead_source_type || ""}
+                  onChange={(e) => {
+                    const type = e.target.value;
+                    s("lead_source_type", type);
+                    if (!type) s("lead_source_detail", "");
+                  }}
+                  style={dropdownStyle(f.lead_source_type)}
+                >
+                  <option value="">Chọn loại nguồn...</option>
+                  {LEAD_SOURCE_TYPE_OPTIONS.map((type) => <option key={type} value={type}>{type}</option>)}
+                </select>
+              </Field>
+              <Field label="Nguồn chi tiết">
+                <select
+                  value={f.lead_source_detail || ""}
+                  onChange={(e) => s("lead_source_detail", e.target.value)}
+                  disabled={!f.lead_source_type}
+                  style={{
+                    ...dropdownStyle(f.lead_source_detail),
+                    opacity: f.lead_source_type ? 1 : 0.6,
+                    cursor: f.lead_source_type ? "pointer" : "not-allowed",
+                  }}
+                >
+                  <option value="">Chọn nguồn chi tiết...</option>
+                  {LEAD_SOURCE_DETAIL_OPTIONS.map((detail) => <option key={detail} value={detail}>{detail}</option>)}
                 </select>
               </Field>
               <Field label="Platform">
