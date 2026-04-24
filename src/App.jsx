@@ -516,6 +516,28 @@ const buildGipRankingReport = (deals) =>
     })
     .sort((a, b) => b.totalDeals - a.totalDeals);
 
+const DEAL_STATUS_FILTER_OPTIONS = [
+  { value: "newLead", label: "New Lead" },
+  { value: "interested", label: "Interested" },
+  { value: "consultationStarted", label: "Consultation Started" },
+  { value: "meetingScheduled", label: "Meeting Scheduled" },
+  { value: "rateCardSent", label: "Rate Card Sent" },
+  { value: "waitingForTestAds", label: "Waiting for Test Ads" },
+  { value: "waitingForShipping", label: "Waiting for Shipping" },
+  { value: "onboardingStarted", label: "Onboarding Started" },
+  { value: "won", label: "Won" },
+  { value: "lost", label: "Lost" },
+  { value: "spamInvalidLead", label: "Spam / Invalid Lead" },
+  { value: "wrongInfo", label: "Wrong Info" },
+  { value: "cantContact", label: "Can't Contact" },
+];
+const matchDealStatusFilter = (dealStatus, filterValue) => {
+  if (!filterValue) return true;
+  const normalized = getNormalizedDealStatusForReport(dealStatus);
+  if (filterValue === "newLead") return String(dealStatus || "").trim() === "New Lead";
+  return normalized === filterValue;
+};
+
 const exportExcel = (deals, reportMonth) => {
   const wb = XLSX.utils.book_new();
   const ws1 = XLSX.utils.aoa_to_sheet([
@@ -753,6 +775,8 @@ export default function App() {
   const [syncState, setSyncState] = useState("idle");
   const [search, setSearch] = useState("");
   const [filterPIC, setFilterPIC] = useState("");
+  const [filterStage, setFilterStage] = useState("");
+  const [filterDealStatus, setFilterDealStatus] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [hydratedFromBackend, setHydratedFromBackend] = useState(false);
   const [tab, setTab] = useState("pipeline");
@@ -1197,6 +1221,18 @@ export default function App() {
   const logout = () => setSessionProfile(null);
 
   const visibleDeals = filterDealsByAccess(deals, { owner: currentAccount, role: effectiveRole, team: effectiveTeam });
+  const picFilterOptions = (() => {
+    if (effectiveRole === DEFAULT_MASTER_ROLE) return allOwnerCodes;
+    const options = [...new Set(visibleDeals.map((deal) => deal.pic).filter(Boolean))];
+    if (!options.includes(currentAccount)) options.unshift(currentAccount);
+    return options;
+  })();
+  useEffect(() => {
+    if (!filterPIC) return;
+    if (!picFilterOptions.includes(filterPIC)) {
+      setFilterPIC("");
+    }
+  }, [filterPIC, picFilterOptions]);
   const filtered = visibleDeals.filter((d) => {
     const searchText = normalizeSearchText(search);
     const searchPhone = normalizePhoneText(search);
@@ -1205,11 +1241,14 @@ export default function App() {
       normalizeSearchText(d.brand).includes(searchText) ||
       normalizeSearchText(d.contact).includes(searchText) ||
       (searchPhone && normalizePhoneText(d.phone).includes(searchPhone));
+    const mst = !filterStage || d.stage === filterStage;
+    const mds = matchDealStatusFilter(d.deal_status, filterDealStatus);
     const mp = !filterPIC || d.pic === filterPIC;
-    return ms && mp;
+    return ms && mst && mds && mp;
   });
+  const kpiDeals = tab === "pipeline" || tab === "alerts" ? filtered : visibleDeals;
 
-  const overdueCount = visibleDeals.filter((d) => {
+  const overdueCount = kpiDeals.filter((d) => {
     const sla = slaStatus(d);
     const mtg = meetingStatus(d);
     const note = followupStatus(d, followupConfig);
@@ -1233,10 +1272,10 @@ export default function App() {
     });
 
   const stats = {
-    total: visibleDeals.length,
-    hot: visibleDeals.filter((d) => d.stage === "Hot").length,
-    win: visibleDeals.filter((d) => d.stage === "Win").length,
-    rev: visibleDeals.reduce((s, d) => s + (Number(d.value) || 0), 0),
+    total: kpiDeals.length,
+    hot: kpiDeals.filter((d) => d.stage === "Hot").length,
+    win: kpiDeals.filter((d) => d.stage === "Win").length,
+    rev: kpiDeals.reduce((s, d) => s + (Number(d.value) || 0), 0),
   };
   const teamStats = TEAM_OPTIONS.map((team) => {
     const teamDeals = deals.filter((deal) => deal.team === team);
@@ -1305,12 +1344,30 @@ export default function App() {
               {(tab === "pipeline" || tab === "alerts") && (
                 <>
                   <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm theo brand, contact, phone..." style={{ ...dropdownStyle(search), width: "260px" }} />
-                  {isMaster && (
-                    <select value={filterPIC} onChange={(e) => setFilterPIC(e.target.value)} style={{ ...dropdownStyle(filterPIC), width: "180px" }}>
+                  <select value={filterStage} onChange={(e) => setFilterStage(e.target.value)} style={{ ...dropdownStyle(filterStage), width: "150px" }}>
+                    <option value="">Tất cả giai đoạn</option>
+                    {STAGES.map((stage) => <option key={stage} value={stage}>{stage}</option>)}
+                  </select>
+                  <select value={filterDealStatus} onChange={(e) => setFilterDealStatus(e.target.value)} style={{ ...dropdownStyle(filterDealStatus), width: "190px" }}>
+                    <option value="">Tất cả trạng thái</option>
+                    {DEAL_STATUS_FILTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                  {effectiveRole !== DEFAULT_USER_ROLE && (
+                    <select value={filterPIC} onChange={(e) => setFilterPIC(e.target.value)} style={{ ...dropdownStyle(filterPIC), width: "160px" }}>
                       <option value="">Tất cả PIC</option>
-                      {allOwnerCodes.map((p) => <option key={p} value={p}>{p}</option>)}
+                      {picFilterOptions.map((p) => <option key={p} value={p}>{p}</option>)}
                     </select>
                   )}
+                  <Btn
+                    onClick={() => {
+                      setSearch("");
+                      setFilterStage("");
+                      setFilterDealStatus("");
+                      setFilterPIC("");
+                    }}
+                  >
+                    Reset
+                  </Btn>
                   <Btn blue onClick={() => openAddOptions({ pic: ownerMode || "" })}>+ Deal mới</Btn>
                 </>
               )}
