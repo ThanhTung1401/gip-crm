@@ -2023,11 +2023,13 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
           </div>
         </div>
 
-        {overdueDeals.length > 0 && (
-          <div style={{ background: "#fff", border: "1.5px solid #f0a898", borderRadius: "12px", padding: "16px", gridColumn: "1/-1" }}>
+        <div className="report-row" style={{ display: "flex", gap: "16px", width: "100%", flexWrap: "wrap" }}>
+          <div style={{ background: "#fff", border: "1.5px solid #f0a898", borderRadius: "12px", padding: "16px", flex: 1, minWidth: "340px" }}>
             <div style={{ fontWeight: "700", color: "#c0392b", fontSize: "13px", marginBottom: "14px" }}>🚨 Danh sách KH quá hạn hiện tại</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              {overdueDeals.map((d) => {
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "360px", overflowY: "auto", paddingRight: "2px" }}>
+              {overdueDeals.length === 0 ? (
+                <div style={{ color: "#c0cfd8", fontSize: "12px", textAlign: "center", padding: "20px 0" }}>Không có khách hàng quá hạn trong phạm vi hiện tại.</div>
+              ) : overdueDeals.map((d) => {
                 const sl = slaStatus(d);
                 const cfg = STAGE_CFG[d.stage] || {};
                 return (
@@ -2041,28 +2043,28 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
               })}
             </div>
           </div>
-        )}
 
-        <div style={{ background: "#fff", border: "1px solid #dde6f0", borderRadius: "12px", padding: "16px", gridColumn: "1/-1" }}>
-          <div style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "13px", marginBottom: "14px" }}>🔄 Lịch sử chuyển stage trong khoảng chọn</div>
-          {hasInvalidRange || movedInRange.length === 0 ? <div style={{ color: "#c0cfd8", fontSize: "12px", textAlign: "center", padding: "20px 0" }}>{hasInvalidRange ? "Khoảng ngày không hợp lệ." : "Chưa có dữ liệu chuyển stage trong khoảng này."}</div> : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              {movedInRange.sort((a, b) => new Date(b.date) - new Date(a.date)).map((h, i) => {
-                const fc = STAGE_CFG[h.from] || {};
-                const tc = STAGE_CFG[h.to] || {};
-                return (
-                  <div key={`${h.id}-${h.date}-${i}`} style={{ display: "flex", alignItems: "center", gap: "10px", background: "#f4f8fc", borderRadius: "8px", padding: "8px 12px" }}>
-                    <span style={{ fontSize: "12px", fontWeight: "700", color: "#1a2a3a", minWidth: "110px" }}>{h.brand}</span>
-                    {h.pic && <span style={{ fontSize: "10px", background: "#e8f3fc", color: "#1a6fba", borderRadius: "4px", padding: "1px 6px", fontWeight: "600" }}>{h.pic}</span>}
-                    <span style={{ fontSize: "11px", color: fc.color, fontWeight: "600" }}>{fc.icon} {h.from}</span>
-                    <span style={{ color: "#c0cfd8" }}>→</span>
-                    <span style={{ fontSize: "11px", color: tc.color, fontWeight: "600" }}>{tc.icon} {h.to}</span>
-                    <span style={{ marginLeft: "auto", fontSize: "11px", color: "#90a8c0" }}>{fmtDate(h.date)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          <div style={{ background: "#fff", border: "1px solid #dde6f0", borderRadius: "12px", padding: "16px", flex: 1, minWidth: "340px" }}>
+            <div style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "13px", marginBottom: "14px" }}>🔄 Lịch sử chuyển stage trong khoảng chọn</div>
+            {hasInvalidRange || movedInRange.length === 0 ? <div style={{ color: "#c0cfd8", fontSize: "12px", textAlign: "center", padding: "20px 0" }}>{hasInvalidRange ? "Khoảng ngày không hợp lệ." : "Chưa có dữ liệu chuyển stage trong khoảng này."}</div> : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "360px", overflowY: "auto", paddingRight: "2px" }}>
+                {movedInRange.sort((a, b) => new Date(b.date) - new Date(a.date)).map((h, i) => {
+                  const fc = STAGE_CFG[h.from] || {};
+                  const tc = STAGE_CFG[h.to] || {};
+                  return (
+                    <div key={`${h.id}-${h.date}-${i}`} style={{ display: "flex", alignItems: "center", gap: "10px", background: "#f4f8fc", borderRadius: "8px", padding: "8px 12px" }}>
+                      <span style={{ fontSize: "12px", fontWeight: "700", color: "#1a2a3a", minWidth: "110px" }}>{h.brand}</span>
+                      {h.pic && <span style={{ fontSize: "10px", background: "#e8f3fc", color: "#1a6fba", borderRadius: "4px", padding: "1px 6px", fontWeight: "600" }}>{h.pic}</span>}
+                      <span style={{ fontSize: "11px", color: fc.color, fontWeight: "600" }}>{fc.icon} {h.from}</span>
+                      <span style={{ color: "#c0cfd8" }}>→</span>
+                      <span style={{ fontSize: "11px", color: tc.color, fontWeight: "600" }}>{tc.icon} {h.to}</span>
+                      <span style={{ marginLeft: "auto", fontSize: "11px", color: "#90a8c0" }}>{fmtDate(h.date)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
