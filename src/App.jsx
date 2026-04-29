@@ -531,6 +531,12 @@ const DEAL_STATUS_FILTER_OPTIONS = [
   { value: "wrongInfo", label: "Wrong Info" },
   { value: "cantContact", label: "Can't Contact" },
 ];
+const PIPELINE_DATE_PRESETS = [
+  { key: "today", label: "Hôm nay" },
+  { key: "7days", label: "7 ngày" },
+  { key: "30days", label: "30 ngày" },
+  { key: "month", label: "Tháng này" },
+];
 const matchDealStatusFilter = (dealStatus, filterValue) => {
   if (!filterValue) return true;
   const normalized = getNormalizedDealStatusForReport(dealStatus);
@@ -777,6 +783,9 @@ export default function App() {
   const [filterPIC, setFilterPIC] = useState("");
   const [filterStage, setFilterStage] = useState("");
   const [filterDealStatus, setFilterDealStatus] = useState("");
+  const [filterFromDate, setFilterFromDate] = useState("");
+  const [filterToDate, setFilterToDate] = useState("");
+  const [activeDatePreset, setActiveDatePreset] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [hydratedFromBackend, setHydratedFromBackend] = useState(false);
   const [tab, setTab] = useState("pipeline");
@@ -1219,6 +1228,50 @@ export default function App() {
   };
 
   const logout = () => setSessionProfile(null);
+  const resetPipelineFilters = () => {
+    setSearch("");
+    setFilterStage("");
+    setFilterDealStatus("");
+    setFilterPIC("");
+    setFilterFromDate("");
+    setFilterToDate("");
+    setActiveDatePreset("");
+  };
+  const getTodayDateKey = () => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  };
+  const shiftDateKey = (dateKey, deltaDays) => {
+    const date = new Date(`${dateKey}T00:00:00`);
+    date.setDate(date.getDate() + deltaDays);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  };
+  const applyDatePreset = (presetKey) => {
+    const today = getTodayDateKey();
+    let from = "";
+    let to = today;
+    if (presetKey === "today") {
+      from = today;
+    } else if (presetKey === "7days") {
+      from = shiftDateKey(today, -6);
+    } else if (presetKey === "30days") {
+      from = shiftDateKey(today, -29);
+    } else if (presetKey === "month") {
+      const now = new Date();
+      from = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    }
+    setFilterFromDate(from);
+    setFilterToDate(to);
+    setActiveDatePreset(presetKey);
+  };
+  const handleFromDateChange = (value) => {
+    setFilterFromDate(value);
+    setActiveDatePreset("");
+  };
+  const handleToDateChange = (value) => {
+    setFilterToDate(value);
+    setActiveDatePreset("");
+  };
 
   const visibleDeals = filterDealsByAccess(deals, { owner: currentAccount, role: effectiveRole, team: effectiveTeam });
   const picFilterOptions = (() => {
@@ -1233,6 +1286,13 @@ export default function App() {
       setFilterPIC("");
     }
   }, [filterPIC, picFilterOptions]);
+  const hasDateFilter = Boolean(filterFromDate || filterToDate);
+  const getDealInputDateKey = (deal) => {
+    if (!deal?.dataInputDate) return "";
+    const parsed = new Date(deal.dataInputDate);
+    if (Number.isNaN(parsed.getTime())) return "";
+    return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
+  };
   const filtered = visibleDeals.filter((d) => {
     const searchText = normalizeSearchText(search);
     const searchPhone = normalizePhoneText(search);
@@ -1244,7 +1304,13 @@ export default function App() {
     const mst = !filterStage || d.stage === filterStage;
     const mds = matchDealStatusFilter(d.deal_status, filterDealStatus);
     const mp = !filterPIC || d.pic === filterPIC;
-    return ms && mst && mds && mp;
+    const dealInputDate = getDealInputDateKey(d);
+    const md =
+      !hasDateFilter ||
+      (dealInputDate &&
+        (!filterFromDate || dealInputDate >= filterFromDate) &&
+        (!filterToDate || dealInputDate <= filterToDate));
+    return ms && mst && mds && mp && md;
   });
   const kpiDeals = tab === "pipeline" || tab === "alerts" ? filtered : visibleDeals;
 
@@ -1293,6 +1359,56 @@ export default function App() {
   return (
     <div style={{ fontFamily: "'Inter',sans-serif", background: UI.background, minHeight: "100vh", color: UI.text, width: "100%" }}>
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+      <style>{`
+        .pipeline-toolbar {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          width: 100%;
+          flex-wrap: nowrap;
+        }
+        .pipeline-toolbar-main {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex: 1;
+          min-width: 0;
+          flex-wrap: nowrap;
+        }
+        .pipeline-toolbar-actions {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-left: auto;
+          flex-shrink: 0;
+        }
+        .pipeline-date-group {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          background: #f8fafc;
+          border-radius: 10px;
+          padding: 4px 8px;
+          height: 38px;
+        }
+        .pipeline-preset-group {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-wrap: nowrap;
+        }
+        @media (max-width: 1399px) {
+          .pipeline-toolbar { flex-wrap: wrap; }
+          .pipeline-toolbar-main { flex-wrap: wrap; }
+          .pipeline-toolbar-actions { margin-left: 0; }
+        }
+        @media (max-width: 767px) {
+          .pipeline-toolbar-main,
+          .pipeline-toolbar-actions {
+            width: 100%;
+          }
+        }
+      `}</style>
       <div style={{ display: "flex", minHeight: "100vh", width: "100%" }}>
         <aside style={{ width: "248px", background: UI.card, borderRight: `1px solid ${UI.border}`, padding: "20px 16px", display: "flex", flexDirection: "column", gap: "18px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
@@ -1340,43 +1456,69 @@ export default function App() {
               <div style={{ fontSize: "22px", fontWeight: "800", color: UI.text }}>{tab === "pipeline" ? "Pipeline Dashboard" : tab === "alerts" ? "Alert Center" : "Analytics & Reports"}</div>
               <div style={{ fontSize: "13px", color: UI.muted, marginTop: "4px" }}>Modern SaaS CRM workspace with cleaner hierarchy, wider data panels, and faster scanning.</div>
             </div>
-            <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end", width: "100%" }}>
               {(tab === "pipeline" || tab === "alerts") && (
-                <>
-                  <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm theo brand, contact, phone..." style={{ ...dropdownStyle(search), width: "260px" }} />
-                  <select value={filterStage} onChange={(e) => setFilterStage(e.target.value)} style={{ ...dropdownStyle(filterStage), width: "150px" }}>
-                    <option value="">Tất cả giai đoạn</option>
-                    {STAGES.map((stage) => <option key={stage} value={stage}>{stage}</option>)}
-                  </select>
-                  <select value={filterDealStatus} onChange={(e) => setFilterDealStatus(e.target.value)} style={{ ...dropdownStyle(filterDealStatus), width: "190px" }}>
-                    <option value="">Tất cả trạng thái</option>
-                    {DEAL_STATUS_FILTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                  </select>
-                  {effectiveRole !== DEFAULT_USER_ROLE && (
-                    <select value={filterPIC} onChange={(e) => setFilterPIC(e.target.value)} style={{ ...dropdownStyle(filterPIC), width: "160px" }}>
-                      <option value="">Tất cả PIC</option>
-                      {picFilterOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                <div className="pipeline-toolbar">
+                  <div className="pipeline-toolbar-main">
+                    <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm theo brand, contact, phone..." style={{ ...dropdownStyle(search), width: "280px", minHeight: "38px" }} />
+                    <select value={filterStage} onChange={(e) => setFilterStage(e.target.value)} style={{ ...dropdownStyle(filterStage), width: "150px", minHeight: "38px" }}>
+                      <option value="">Tất cả giai đoạn</option>
+                      {STAGES.map((stage) => <option key={stage} value={stage}>{stage}</option>)}
                     </select>
-                  )}
-                  <Btn
-                    onClick={() => {
-                      setSearch("");
-                      setFilterStage("");
-                      setFilterDealStatus("");
-                      setFilterPIC("");
-                    }}
-                  >
-                    Reset
-                  </Btn>
-                  <Btn blue onClick={() => openAddOptions({ pic: ownerMode || "" })}>+ Deal mới</Btn>
-                </>
+                    <select value={filterDealStatus} onChange={(e) => setFilterDealStatus(e.target.value)} style={{ ...dropdownStyle(filterDealStatus), width: "165px", minHeight: "38px" }}>
+                      <option value="">Tất cả trạng thái</option>
+                      {DEAL_STATUS_FILTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                    {effectiveRole !== DEFAULT_USER_ROLE && (
+                      <select value={filterPIC} onChange={(e) => setFilterPIC(e.target.value)} style={{ ...dropdownStyle(filterPIC), width: "140px", minHeight: "38px" }}>
+                        <option value="">Tất cả PIC</option>
+                        {picFilterOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                      </select>
+                    )}
+                    <div className="pipeline-date-group">
+                      <span style={{ fontSize: "12px", color: UI.muted }}>📅</span>
+                      <input aria-label="Từ ngày" type="date" value={filterFromDate} onChange={(e) => handleFromDateChange(e.target.value)} style={{ ...dropdownStyle(filterFromDate), width: "140px", minHeight: "30px", padding: "5px 6px", background: "#f8fafc", border: "none", boxShadow: "none" }} />
+                    </div>
+                    <div className="pipeline-date-group">
+                      <span style={{ fontSize: "12px", color: UI.muted }}>📅</span>
+                      <input aria-label="Đến ngày" type="date" value={filterToDate} onChange={(e) => handleToDateChange(e.target.value)} style={{ ...dropdownStyle(filterToDate), width: "140px", minHeight: "30px", padding: "5px 6px", background: "#f8fafc", border: "none", boxShadow: "none" }} />
+                    </div>
+                    <div className="pipeline-preset-group">
+                      {PIPELINE_DATE_PRESETS.map((preset) => {
+                        const active = activeDatePreset === preset.key;
+                        return (
+                          <button
+                            key={preset.key}
+                            type="button"
+                            onClick={() => applyDatePreset(preset.key)}
+                            style={{
+                              border: `1px solid ${active ? "#93c5fd" : "#dbe4ef"}`,
+                              background: active ? "#eff6ff" : "#f8fafc",
+                              color: active ? UI.primary : UI.muted,
+                              fontSize: "11px",
+                              fontWeight: "700",
+                              borderRadius: "999px",
+                              padding: "6px 9px",
+                              height: "38px",
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                            }}
+                          >
+                            {preset.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="pipeline-toolbar-actions">
+                    <Btn blue onClick={() => openAddOptions({ pic: ownerMode || "" })}>+ Deal mới</Btn>
+                    {canOpenSettings && <Btn onClick={() => setShowSetup(true)}>⚙ Cài đặt</Btn>}
+                  </div>
+                </div>
               )}
               {tab === "report" && <Btn blue onClick={() => exportExcel(deals, `${reportFrom || "start"}_${reportTo || "end"}`)}>⬇ Xuất Excel</Btn>}
-              <div style={{ background: syncState === "error" ? "#fef2f2" : "#f8fafc", border: `1px solid ${syncState === "error" ? "#fecaca" : syncState === "success" ? "#bbf7d0" : UI.border}`, borderRadius: "12px", padding: "10px 12px", color: syncState === "error" ? "#b91c1c" : syncState === "success" ? "#166534" : UI.muted, fontSize: "12px", fontWeight: "700" }}>
-                {syncState === "syncing" ? "Đang lưu tự động..." : syncState === "error" ? "Mất kết nối backend" : backendReady ? "Đã lưu tự động" : "Đang chờ backend"}
-              </div>
               {requiresLogin && <Btn onClick={logout}>Đăng xuất</Btn>}
-              {canOpenSettings && <Btn onClick={() => setShowSetup(true)}>⚙ Cài đặt</Btn>}
+              {tab === "report" && canOpenSettings && <Btn onClick={() => setShowSetup(true)}>⚙ Cài đặt</Btn>}
             </div>
           </div>
 
@@ -1421,7 +1563,7 @@ export default function App() {
       {showAddOptions && <AddDealOptionsModal preset={addPreset} onSingleAdd={() => { setModalDeal({ stage: addPreset.stage || "Data Thô", pic: addPreset.pic || ownerMode || "" }); setShowAddOptions(false); }} onImport={() => { setShowImportModal(true); setShowAddOptions(false); }} onClose={() => setShowAddOptions(false)} />}
       {showImportModal && <ImportDealsModal preset={addPreset} ownerMode={ownerMode} onDownloadTemplate={exportImportTemplate} onImport={importDeals} onClose={() => setShowImportModal(false)} />}
       {modalDeal !== null && <DealModal deal={modalDeal} ownerCodes={allOwnerCodes} authConfig={authConfig} onSave={saveDeal} onClose={() => setModalDeal(null)} ownerMode={ownerMode} isMaster={isMaster} currentRole={effectiveRole} currentTeam={effectiveTeam} />}
-      {canOpenSettings && showSetup && <SetupModal currentAccount={currentAccount} isMaster={isMaster} ownerCodes={ownerCodes} authConfig={authConfig} telegramConfig={telegramConfig} followupConfig={followupConfig} backendReady={backendReady} onSave={saveSettings} onTestTelegram={testTelegram} onRunScan={runAlertScan} onDownloadBackup={downloadBackup} onRestoreBackup={restoreBackup} onSyncFromOnline={syncFromOnline} onClose={() => setShowSetup(false)} />}
+      {canOpenSettings && showSetup && <SetupModal currentAccount={currentAccount} isMaster={isMaster} ownerCodes={ownerCodes} authConfig={authConfig} telegramConfig={telegramConfig} followupConfig={followupConfig} backendReady={backendReady} onSave={saveSettings} onTestTelegram={testTelegram} onRunScan={runAlertScan} onDownloadBackup={downloadBackup} onRestoreBackup={restoreBackup} onSyncFromOnline={syncFromOnline} onResetFilters={resetPipelineFilters} onClose={() => setShowSetup(false)} />}
     </div>
   );
 }
@@ -2325,7 +2467,7 @@ function DealModal({ deal, ownerCodes, authConfig, onSave, onClose, ownerMode, i
   );
 }
 
-function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegramConfig, followupConfig, backendReady, onSave, onTestTelegram, onRunScan, onDownloadBackup, onRestoreBackup, onSyncFromOnline, onClose }) {
+function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegramConfig, followupConfig, backendReady, onSave, onTestTelegram, onRunScan, onDownloadBackup, onRestoreBackup, onSyncFromOnline, onResetFilters, onClose }) {
   const [localOwnerRows, setLocalOwnerRows] = useState(() => makeOwnerRows(ownerCodes));
   const [localAuth, setLocalAuth] = useState(() => normalizeAuthConfig(authConfig, ownerCodes));
   const [localTelegram, setLocalTelegram] = useState(() => normalizeTelegramConfig(telegramConfig, ownerCodes));
@@ -2547,6 +2689,7 @@ function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegram
         )}
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "16px" }}>
+          <Btn onClick={onResetFilters}>Reset bộ lọc</Btn>
           {isMaster && <Btn onClick={onRunScan}>Quét cảnh báo</Btn>}
           <Btn onClick={onClose}>Đóng</Btn>
           <Btn blue onClick={handleSave}>Lưu cấu hình</Btn>
