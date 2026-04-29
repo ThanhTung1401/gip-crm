@@ -133,6 +133,21 @@ const toDateInputValue = (iso) => {
   if (Number.isNaN(d.getTime())) return "";
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
+const normalizeDateOnly = (value) => {
+  if (!value) return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+  }
+  const raw = String(value).trim();
+  if (!raw) return "";
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+  const dmyMatch = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (dmyMatch) return `${dmyMatch[3]}-${dmyMatch[2]}-${dmyMatch[1]}`;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
+};
 const startOfDay = (value) => {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return null;
@@ -1288,10 +1303,17 @@ export default function App() {
   }, [filterPIC, picFilterOptions]);
   const hasDateFilter = Boolean(filterFromDate || filterToDate);
   const getDealInputDateKey = (deal) => {
-    if (!deal?.dataInputDate) return "";
-    const parsed = new Date(deal.dataInputDate);
-    if (Number.isNaN(parsed.getTime())) return "";
-    return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
+    const rawDate =
+      deal?.dataInputDate ||
+      deal?.date ||
+      deal?.import_date ||
+      deal?.data_date ||
+      deal?.lead_date ||
+      deal?.ngay_nhap_data ||
+      deal?.ngayNhapData ||
+      deal?.dataInput ||
+      "";
+    return normalizeDateOnly(rawDate);
   };
   const filtered = visibleDeals.filter((d) => {
     const searchText = normalizeSearchText(search);
@@ -1305,11 +1327,9 @@ export default function App() {
     const mds = matchDealStatusFilter(d.deal_status, filterDealStatus);
     const mp = !filterPIC || d.pic === filterPIC;
     const dealInputDate = getDealInputDateKey(d);
-    const md =
-      !hasDateFilter ||
-      (dealInputDate &&
-        (!filterFromDate || dealInputDate >= filterFromDate) &&
-        (!filterToDate || dealInputDate <= filterToDate));
+    const fromDate = normalizeDateOnly(filterFromDate);
+    const toDate = normalizeDateOnly(filterToDate);
+    const md = !hasDateFilter || (dealInputDate && (!fromDate || dealInputDate >= fromDate) && (!toDate || dealInputDate <= toDate));
     return ms && mst && mds && mp && md;
   });
   const kpiDeals = tab === "pipeline" || tab === "alerts" ? filtered : visibleDeals;
@@ -1344,7 +1364,7 @@ export default function App() {
     rev: kpiDeals.reduce((s, d) => s + (Number(d.value) || 0), 0),
   };
   const teamStats = TEAM_OPTIONS.map((team) => {
-    const teamDeals = deals.filter((deal) => deal.team === team);
+    const teamDeals = kpiDeals.filter((deal) => deal.team === team);
     return {
       team,
       total: teamDeals.length,
