@@ -1984,41 +1984,43 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
           </div>
         )}
 
-        <div style={{ background: "#fff", border: "1px solid #dde6f0", borderRadius: "12px", padding: "16px" }}>
-          <div style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "13px", marginBottom: "14px" }}>📋 Phân bổ stage</div>
-          {STAGES.map((st) => {
-            const cfg = STAGE_CFG[st];
-            const cnt = hasInvalidRange ? 0 : stageCounts[st];
-            return (
-              <div key={st} style={{ marginBottom: "10px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-                  <span style={{ fontSize: "12px", color: cfg.color, fontWeight: "600" }}>{cfg.icon} {st}</span>
-                  <span style={{ fontSize: "12px", color: "#6080a0", fontWeight: "600" }}>{cnt}</span>
+        <div className="report-row" style={{ display: "flex", gap: "16px", width: "100%", flexWrap: "wrap" }}>
+          <div style={{ background: "#fff", border: "1px solid #dde6f0", borderRadius: "12px", padding: "16px", flex: 1, minWidth: "340px" }}>
+            <div style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "13px", marginBottom: "14px" }}>📋 Phân bổ stage</div>
+            {STAGES.map((st) => {
+              const cfg = STAGE_CFG[st];
+              const cnt = hasInvalidRange ? 0 : stageCounts[st];
+              return (
+                <div key={st} style={{ marginBottom: "8px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
+                    <span style={{ fontSize: "11px", color: cfg.color, fontWeight: "600" }}>{cfg.icon} {st}</span>
+                    <span style={{ fontSize: "11px", color: "#6080a0", fontWeight: "600" }}>{cnt}</span>
+                  </div>
+                  <div style={{ background: "#f0f4f8", borderRadius: "4px", height: "5px" }}><div style={{ background: cfg.border, width: `${maxStageCount > 0 ? (cnt / maxStageCount) * 100 : 0}%`, height: "100%", borderRadius: "4px", transition: "width 0.5s" }} /></div>
                 </div>
-                <div style={{ background: "#f0f4f8", borderRadius: "4px", height: "6px" }}><div style={{ background: cfg.border, width: `${maxStageCount > 0 ? (cnt / maxStageCount) * 100 : 0}%`, height: "100%", borderRadius: "4px", transition: "width 0.5s" }} /></div>
-              </div>
-            );
-          })}
-          {!hasInvalidRange && rangedDeals.length === 0 && <div style={{ fontSize: "12px", color: "#c0cfd8", textAlign: "center", padding: "12px 0 4px" }}>Không có lead trong khoảng này.</div>}
-        </div>
+              );
+            })}
+            {!hasInvalidRange && rangedDeals.length === 0 && <div style={{ fontSize: "12px", color: "#c0cfd8", textAlign: "center", padding: "12px 0 4px" }}>Không có lead trong khoảng này.</div>}
+          </div>
 
-        <div style={{ background: "#fff", border: "1px solid #dde6f0", borderRadius: "12px", padding: "16px" }}>
-          <div style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "13px", marginBottom: "14px" }}>⏱ Avg ngày / SLA</div>
-          {Object.entries(avgDays).map(([key, val]) => {
-            const [from, to] = key.split("→");
-            const fc = STAGE_CFG[from] || {};
-            const tc = STAGE_CFG[to] || {};
-            const sla = SLA_DAYS[from];
-            const overSLA = val !== null && sla && val > sla;
-            return (
-              <div key={key} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px", background: overSLA ? "#fdecea" : "#f4f8fc", borderRadius: "8px", padding: "8px 10px" }}>
-                <span style={{ fontSize: "11px", color: fc.color, fontWeight: "600" }}>{fc.icon} {from}</span>
-                <span style={{ color: "#c0cfd8", fontSize: "12px" }}>→</span>
-                <span style={{ fontSize: "11px", color: tc.color, fontWeight: "600" }}>{tc.icon} {to}</span>
-                <span style={{ marginLeft: "auto", fontSize: "12px", fontWeight: "700", color: overSLA ? "#c0392b" : val !== null ? "#1a6fba" : "#c0cfd8" }}>{hasInvalidRange ? "—" : val !== null ? `${val}n (SLA:${sla}n)` : "—"}</span>
-              </div>
-            );
-          })}
+          <div style={{ background: "#fff", border: "1px solid #dde6f0", borderRadius: "12px", padding: "16px", flex: 1, minWidth: "340px" }}>
+            <div style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "13px", marginBottom: "14px" }}>⏱ Avg ngày / SLA</div>
+            {Object.entries(avgDays).map(([key, val]) => {
+              const [from, to] = key.split("→");
+              const fc = STAGE_CFG[from] || {};
+              const tc = STAGE_CFG[to] || {};
+              const sla = SLA_DAYS[from];
+              const overSLA = val !== null && sla && val > sla;
+              return (
+                <div key={key} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px", background: overSLA ? "#fdecea" : "#f4f8fc", borderRadius: "8px", padding: "7px 9px" }}>
+                  <span style={{ fontSize: "11px", color: fc.color, fontWeight: "600" }}>{fc.icon} {from}</span>
+                  <span style={{ color: "#c0cfd8", fontSize: "12px" }}>→</span>
+                  <span style={{ fontSize: "11px", color: tc.color, fontWeight: "600" }}>{tc.icon} {to}</span>
+                  <span style={{ marginLeft: "auto", fontSize: "12px", fontWeight: "700", color: overSLA ? "#c0392b" : val !== null ? "#1a6fba" : "#c0cfd8" }}>{hasInvalidRange ? "—" : val !== null ? `${val}n (SLA:${sla}n)` : "—"}</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {overdueDeals.length > 0 && (
