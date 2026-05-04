@@ -16,6 +16,7 @@ const PLATFORM_ALIASES = {
   website: "Khác",
 };
 const DEAL_STATUS_OPTIONS = [
+  "Đã liên hệ",
   "New Lead",
   "Interested",
   "Consultation Started",
@@ -148,6 +149,19 @@ const normalizeDateOnly = (value) => {
   if (Number.isNaN(parsed.getTime())) return "";
   return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
 };
+const getDealInputDateKey = (deal) => {
+  const rawDate =
+    deal?.dataInputDate ||
+    deal?.date ||
+    deal?.import_date ||
+    deal?.data_date ||
+    deal?.lead_date ||
+    deal?.ngay_nhap_data ||
+    deal?.ngayNhapData ||
+    deal?.dataInput ||
+    "";
+  return normalizeDateOnly(rawDate);
+};
 const startOfDay = (value) => {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return null;
@@ -246,6 +260,12 @@ const getAlertPriority = (deal, followupConfig) => {
   if ((sla && sla.type === "overdue") || (mtg && mtg.type === "overdue") || (followup && followup.type === "overdue")) return "critical";
   if ((sla && (sla.type === "warning" || sla.type === "caution")) || (mtg && mtg.type === "warning") || (followup && followup.type === "warning")) return "warning";
   return null;
+};
+const isDealCurrentlyOverdue = (deal, followupConfig) => {
+  const sla = slaStatus(deal);
+  const mtg = meetingStatus(deal);
+  const note = followupStatus(deal, followupConfig);
+  return (sla && sla.type === "overdue") || (mtg && mtg.type === "overdue") || (note && note.type === "overdue");
 };
 
 const getOwnerFromURL = () => {
@@ -384,7 +404,15 @@ const normalizeDeals = (rawDeals) =>
           };
         })(),
         platform: normalizePlatformList(Array.isArray(deal.platform) ? deal.platform : deal.platform ? [deal.platform] : []),
-        deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "",
+        ...(() => {
+          const stageRaw = String(deal?.stage || "").trim();
+          const normalizedStage = normalizeSearchText(stageRaw);
+          const mappedFromTiepCan = normalizedStage === "tiep can" || normalizedStage === "tiepcan";
+          const nextStage = STAGES.includes(stageRaw) ? stageRaw : mappedFromTiepCan ? "Cold" : "Data Thô";
+          const currentStatus = DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "";
+          const nextStatus = mappedFromTiepCan ? (currentStatus || "Đã liên hệ") : currentStatus;
+          return { stage: nextStage, deal_status: nextStatus };
+        })(),
         notes: parseNotes(deal.notes),
         stageHistory: Array.isArray(deal.stageHistory) ? deal.stageHistory : [],
       }))
@@ -697,10 +725,12 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
       return null;
     }
 
-    const rawStage = String(getImportValue(normalizedRow, importHeaderAliases.stage) || preset.stage || "Data Thô").trim();
-    const stage = STAGES.includes(rawStage) ? rawStage : "Data Thô";
-    const rawDealStatus = String(getImportValue(normalizedRow, importHeaderAliases.deal_status) || "").trim();
-    const deal_status = DEAL_STATUS_OPTIONS.includes(rawDealStatus) ? rawDealStatus : "";
+      const rawStage = String(getImportValue(normalizedRow, importHeaderAliases.stage) || preset.stage || "Data Thô").trim();
+      const normalizedStage = normalizeSearchText(rawStage);
+      const isOldTiepCan = normalizedStage === "tiep can" || normalizedStage === "tiepcan";
+      const stage = STAGES.includes(rawStage) ? rawStage : isOldTiepCan ? "Cold" : "Data Thô";
+      const rawDealStatus = String(getImportValue(normalizedRow, importHeaderAliases.deal_status) || "").trim();
+      const deal_status = isOldTiepCan ? (DEAL_STATUS_OPTIONS.includes(rawDealStatus) ? rawDealStatus : "Đã liên hệ") : (DEAL_STATUS_OPTIONS.includes(rawDealStatus) ? rawDealStatus : "");
     const rawPic = String(getImportValue(normalizedRow, importHeaderAliases.pic) || preset.pic || "").trim().toUpperCase();
     const pic = ownerMode || (buildAllOwnerCodes(ownerCodes).includes(rawPic) ? rawPic : rawPic);
     const rawPlatform = getImportValue(normalizedRow, importHeaderAliases.platform);
@@ -1302,19 +1332,6 @@ export default function App() {
     }
   }, [filterPIC, picFilterOptions]);
   const hasDateFilter = Boolean(filterFromDate || filterToDate);
-  const getDealInputDateKey = (deal) => {
-    const rawDate =
-      deal?.dataInputDate ||
-      deal?.date ||
-      deal?.import_date ||
-      deal?.data_date ||
-      deal?.lead_date ||
-      deal?.ngay_nhap_data ||
-      deal?.ngayNhapData ||
-      deal?.dataInput ||
-      "";
-    return normalizeDateOnly(rawDate);
-  };
   const filtered = visibleDeals.filter((d) => {
     const searchText = normalizeSearchText(search);
     const searchPhone = normalizePhoneText(search);
@@ -1332,15 +1349,23 @@ export default function App() {
     const md = !hasDateFilter || (dealInputDate && (!fromDate || dealInputDate >= fromDate) && (!toDate || dealInputDate <= toDate));
     return ms && mst && mds && mp && md;
   });
+  const filteredNoDate = visibleDeals.filter((d) => {
+    const searchText = normalizeSearchText(search);
+    const searchPhone = normalizePhoneText(search);
+    const ms =
+      !searchText ||
+      normalizeSearchText(d.brand).includes(searchText) ||
+      normalizeSearchText(d.contact).includes(searchText) ||
+      (searchPhone && normalizePhoneText(d.phone).includes(searchPhone));
+    const mst = !filterStage || d.stage === filterStage;
+    const mds = matchDealStatusFilter(d.deal_status, filterDealStatus);
+    const mp = !filterPIC || d.pic === filterPIC;
+    return ms && mst && mds && mp;
+  });
   const kpiDeals = tab === "pipeline" || tab === "alerts" ? filtered : visibleDeals;
 
-  const overdueCount = kpiDeals.filter((d) => {
-    const sla = slaStatus(d);
-    const mtg = meetingStatus(d);
-    const note = followupStatus(d, followupConfig);
-    return (sla && sla.type === "overdue") || (mtg && mtg.type === "overdue") || (note && note.type === "overdue");
-  }).length;
-  const alertDeals = filtered
+  const overdueCount = kpiDeals.filter((d) => isDealCurrentlyOverdue(d, followupConfig)).length;
+  const alertDeals = filteredNoDate
     .map((deal) => ({
       deal,
       sla: slaStatus(deal),
@@ -1356,6 +1381,24 @@ export default function App() {
       if (scoreDiff !== 0) return scoreDiff;
       return new Date(b.deal.updatedAt || b.deal.createdAt || 0) - new Date(a.deal.updatedAt || a.deal.createdAt || 0);
     });
+  useEffect(() => {
+    if (tab !== "alerts") return;
+    console.info("[Alert Debug]", {
+      mode: "real-time",
+      filters: {
+        search,
+        stage: filterStage || "all",
+        dealStatus: filterDealStatus || "all",
+        pic: filterPIC || "all",
+        dateIgnored: true,
+        fromDate: filterFromDate || null,
+        toDate: filterToDate || null,
+      },
+      baseDeals: filteredNoDate.length,
+      alertDeals: alertDeals.length,
+      currentlyOverdue: filteredNoDate.filter((d) => isDealCurrentlyOverdue(d, followupConfig)).length,
+    });
+  }, [tab, search, filterStage, filterDealStatus, filterPIC, filterFromDate, filterToDate, filteredNoDate, alertDeals, followupConfig]);
 
   const stats = {
     total: kpiDeals.length,
@@ -1575,7 +1618,7 @@ export default function App() {
 
             {tab === "pipeline" && <KanbanBoard deals={filtered} dragOver={dragOver} setDragOver={setDragOver} draggingId={draggingId} setDraggingId={setDraggingId} moveDeal={moveDeal} onEdit={(d) => setModalDeal(d)} onDelete={deleteDeal} onAdd={(stage) => openAddOptions({ stage, pic: ownerMode || "" })} />}
             {tab === "alerts" && <AlertView alertDeals={alertDeals} onEdit={(deal) => setModalDeal(deal)} />}
-            {tab === "report" && <ReportView deals={isMaster ? deals : visibleDeals} ownerCodes={allOwnerCodes} reportFrom={reportFrom} setReportFrom={setReportFrom} reportTo={reportTo} setReportTo={setReportTo} reportPIC={ownerMode || reportPIC} setReportPIC={setReportPIC} isMaster={isMaster} />}
+            {tab === "report" && <ReportView deals={isMaster ? deals : visibleDeals} ownerCodes={allOwnerCodes} reportFrom={reportFrom} setReportFrom={setReportFrom} reportTo={reportTo} setReportTo={setReportTo} reportPIC={ownerMode || reportPIC} setReportPIC={setReportPIC} isMaster={isMaster} followupConfig={followupConfig} />}
           </div>
         </div>
       </div>
@@ -1743,23 +1786,46 @@ function DealCard({ deal, cfg, isDragging, onDragStart, onDragEnd, onEdit, onDel
   );
 }
 
-function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, setReportTo, reportPIC, setReportPIC, isMaster }) {
+function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, setReportTo, reportPIC, setReportPIC, isMaster, followupConfig }) {
   const [rankingSort, setRankingSort] = useState({ key: "totalDeals", direction: "desc" });
+  const [expandedSourceTypes, setExpandedSourceTypes] = useState({});
+  const dashNode = <span style={{ color: "#94a3b8", fontWeight: "500" }}>-</span>;
+  const metricNode = (value, style = null) => {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n === 0) return dashNode;
+    return <span style={style || undefined}>{n}</span>;
+  };
+  const metricText = (value, formatter) => {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n === 0) return dashNode;
+    return formatter ? formatter(n) : String(n);
+  };
   const picDeals = reportPIC === "all" ? deals : deals.filter((d) => d.pic === reportPIC);
   const hasInvalidRange = !!reportFrom && !!reportTo && startOfDay(reportFrom) > endOfDay(reportTo);
-  const isWithinRange = (value) => !hasInvalidRange && isInDateRange(value, reportFrom, reportTo);
+  const reportFromKey = normalizeDateOnly(reportFrom);
+  const reportToKey = normalizeDateOnly(reportTo);
+  const hasReportDateFilter = Boolean(reportFromKey || reportToKey);
+  const isDealInputDateInRange = (deal) => {
+    if (hasInvalidRange) return false;
+    const inputDateKey = getDealInputDateKey(deal);
+    if (!hasReportDateFilter) return true;
+    if (!inputDateKey) return false;
+    if (reportFromKey && inputDateKey < reportFromKey) return false;
+    if (reportToKey && inputDateKey > reportToKey) return false;
+    return true;
+  };
   const setPreset = (preset) => {
     const next = buildDatePresetRange(preset);
     setReportFrom(next.from);
     setReportTo(next.to);
   };
 
-  const rangedDeals = picDeals.filter((d) => isWithinRange(d.dataInputDate || d.createdAt));
+  const rangedDeals = picDeals.filter((d) => isDealInputDateInRange(d));
   const movedInRange = hasInvalidRange
     ? []
-    : picDeals.flatMap((d) =>
+    : rangedDeals.flatMap((d) =>
         (Array.isArray(d.stageHistory) ? d.stageHistory : [])
-          .filter((h) => h.from && isWithinRange(h.date))
+          .filter((h) => h.from)
           .map((h, index, arr) => {
             const currentIndex = arr.indexOf(h);
             const originalHistory = Array.isArray(d.stageHistory) ? d.stageHistory : [];
@@ -1771,14 +1837,26 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
             return { ...h, brand: d.brand, pic: d.pic, value: Number(d.value) || 0, id: d.id, prevDate: prev, _idx: currentIndex };
           }),
       );
-  const wonInRange = picDeals.filter((d) => (Array.isArray(d.stageHistory) ? d.stageHistory : []).some((x) => x.to === "Win" && isWithinRange(x.date)));
+  const wonInRange = rangedDeals.filter((d) => (Array.isArray(d.stageHistory) ? d.stageHistory : []).some((x) => x.to === "Win"));
   const revenueWin = wonInRange.reduce((s, d) => s + (Number(d.value) || 0), 0);
-  const overdueDeals = picDeals.filter((d) => {
-    const sl = slaStatus(d);
-    const mtg = meetingStatus(d);
-    const note = followupStatus(d, FOLLOWUP_HOURS_DEFAULT);
-    return (sl && sl.type === "overdue") || (mtg && mtg.type === "overdue") || (note && note.type === "overdue");
-  });
+  const overdueDealsInRange = rangedDeals.filter((d) => isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT));
+  const realtimeOverdueByPic = picDeals.filter((d) => isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT));
+  const overdueDeals = overdueDealsInRange;
+
+  useEffect(() => {
+    console.info("[Report Debug]", {
+      mode: "current-overdue-snapshot",
+      filters: {
+        pic: reportPIC || "all",
+        from: reportFrom || null,
+        to: reportTo || null,
+      },
+      rangedDeals: rangedDeals.length,
+      realtimeOverdueByPic: realtimeOverdueByPic.length,
+      overdueInRange: overdueDealsInRange.length,
+      shownOverdue: overdueDeals.length,
+    });
+  }, [reportPIC, reportFrom, reportTo, rangedDeals, realtimeOverdueByPic, overdueDealsInRange, overdueDeals]);
 
   const avgDays = {};
   STAGES.forEach((st, i) => {
@@ -1786,10 +1864,10 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
     const from = STAGES[i - 1];
     const transitions = hasInvalidRange
       ? []
-      : picDeals.flatMap((d) => {
+      : rangedDeals.flatMap((d) => {
           const h = Array.isArray(d.stageHistory) ? d.stageHistory : [];
           return h
-            .filter((x) => x.from === from && x.to === st && isWithinRange(x.date))
+            .filter((x) => x.from === from && x.to === st)
             .map((x) => {
               const prev = h.slice(0, h.indexOf(x)).reverse().find((y) => y.to === from)?.date || d.dataInputDate || d.createdAt;
               return daysBetween(prev, x.date);
@@ -1801,26 +1879,131 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
   const picStats = ownerCodes
     .map((pic) => {
       const pd = deals.filter((d) => d.pic === pic);
-      const leads = pd.filter((d) => isWithinRange(d.dataInputDate || d.createdAt));
-      const wins = pd.filter((d) => (Array.isArray(d.stageHistory) ? d.stageHistory : []).some((x) => x.to === "Win" && isWithinRange(x.date)));
+      const leads = pd.filter((d) => isDealInputDateInRange(d));
+      const wins = leads.filter((d) => (Array.isArray(d.stageHistory) ? d.stageHistory : []).some((x) => x.to === "Win"));
       return {
         pic,
         total: leads.length,
         hot: leads.filter((d) => d.stage === "Hot").length,
         win: wins.length,
         rev: wins.reduce((s, d) => s + (Number(d.value) || 0), 0),
-        overdue: pd.filter((d) => {
-          const sl = slaStatus(d);
-          const mtg = meetingStatus(d);
-          const note = followupStatus(d, FOLLOWUP_HOURS_DEFAULT);
-          return (sl && sl.type === "overdue") || (mtg && mtg.type === "overdue") || (note && note.type === "overdue");
-        }).length,
+        overdue: leads.filter((d) => isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT)).length,
       };
     })
     .filter((p) => p.total > 0 || p.win > 0 || p.overdue > 0);
 
   const stageCounts = Object.fromEntries(STAGES.map((stage) => [stage, rangedDeals.filter((d) => d.stage === stage).length]));
   const maxStageCount = Math.max(...Object.values(stageCounts), 1);
+  const reportStageColumns = ["Data Thô", "Freeze", "Cold", "Warm", "Hot", "Win"];
+  const normalizeAscii = (value) =>
+    String(value || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  const normalizeSourceTypeLabel = (value) => {
+    const key = normalizeAscii(value);
+    if (!key) return "";
+    if (key.includes("ca nhan")) return "Cá nhân";
+    if (key.includes("sep loki")) return "Sếp Loki";
+    if (key.includes("cong ty")) return "Công ty";
+    return "";
+  };
+  const normalizeSourceDetailLabel = (value) => {
+    const key = normalizeAscii(value);
+    if (!key) return "";
+    if (key.includes("facebook")) return "Facebook";
+    if (key.includes("zalo")) return "Zalo";
+    if (key.includes("tiktok") || key.includes("tik tok")) return "TikTok";
+    if (key.includes("website") || key.includes("web site")) return "Website";
+    if (key.includes("fanpage") || key.includes("fan page")) return "Fanpage";
+    if (key.includes("group")) return "Group";
+    if (key.includes("khach gioi thieu")) return "Khách giới thiệu";
+    if (key.includes("khac") || key.includes("other")) return "Khác";
+    return "";
+  };
+  const parseSourceFromLegacy = (deal) => {
+    const raw = String(deal?.lead_source || deal?.source || "").trim();
+    if (!raw) return { sourceType: "", sourceDetail: "" };
+    const split = raw.split("-").map((v) => v.trim()).filter(Boolean);
+    if (split.length >= 2) {
+      return {
+        sourceType: normalizeSourceTypeLabel(split[0]),
+        sourceDetail: normalizeSourceDetailLabel(split.slice(1).join(" - ")),
+      };
+    }
+    return {
+      sourceType: normalizeSourceTypeLabel(raw),
+      sourceDetail: normalizeSourceDetailLabel(raw),
+    };
+  };
+  const getDealSourceBucket = (deal) => {
+    const directType = normalizeSourceTypeLabel(deal?.lead_source_type);
+    const directDetail = normalizeSourceDetailLabel(deal?.lead_source_detail);
+    const legacy = parseSourceFromLegacy(deal);
+    const platformDetail = Array.isArray(deal?.platform) && deal.platform.length
+      ? normalizeSourceDetailLabel(deal.platform[0])
+      : normalizeSourceDetailLabel(deal?.platform);
+    const sourceType = directType || legacy.sourceType || (directDetail || legacy.sourceDetail || platformDetail ? "Chưa phân loại" : "Chưa phân loại");
+    const sourceDetail = directDetail || legacy.sourceDetail || platformDetail || "Chưa rõ nguồn";
+    return { sourceType, sourceDetail };
+  };
+  const weekStart = (() => {
+    const now = new Date();
+    const dow = now.getDay();
+    const shift = dow === 0 ? 6 : dow - 1;
+    const d = new Date(now);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - shift);
+    return d;
+  })();
+  const monthStart = (() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  })();
+  const getDealDate = (deal) => {
+    const raw = getDealInputDateKey(deal);
+    return raw ? new Date(`${raw}T00:00:00`) : null;
+  };
+  const isInMTD = (deal) => {
+    const d = getDealDate(deal);
+    return d ? d >= monthStart : false;
+  };
+  const isInWTD = (deal) => {
+    const d = getDealDate(deal);
+    return d ? d >= weekStart : false;
+  };
+  const isWinDeal = (deal) => deal.stage === "Win" || getNormalizedDealStatusForReport(deal.deal_status) === "won";
+  const countSourceMetrics = (rows) => {
+    const stageCountsMap = Object.fromEntries(reportStageColumns.map((stage) => [stage, 0]));
+    rows.forEach((deal) => {
+      if (stageCountsMap[deal.stage] !== undefined) stageCountsMap[deal.stage] += 1;
+    });
+    return {
+      MTD: rows.filter(isInMTD).length,
+      W: rows.filter(isWinDeal).length,
+      WTD: rows.filter(isInWTD).length,
+      ...stageCountsMap,
+    };
+  };
+  const sourceTypeOrder = ["Cá nhân", "Sếp Loki", "Công ty", "Chưa phân loại"];
+  const sourceDetailOrder = ["Facebook", "Zalo", "TikTok", "Website", "Fanpage", "Group", "Khách giới thiệu", "Khác", "Chưa rõ nguồn"];
+  const sourceBaseDeals = hasInvalidRange ? [] : rangedDeals;
+  const sourceReportRows = sourceTypeOrder.map((type) => {
+    const typeDeals = sourceBaseDeals.filter((deal) => getDealSourceBucket(deal).sourceType === type);
+    const groupedByName = sourceDetailOrder.map((sourceName) => {
+      const rows = typeDeals.filter((deal) => getDealSourceBucket(deal).sourceDetail === sourceName);
+      return { sourceName, deals: rows, metrics: countSourceMetrics(rows) };
+    }).filter((entry) => entry.deals.length > 0);
+    return {
+      sourceType: type,
+      deals: typeDeals,
+      metrics: countSourceMetrics(typeDeals),
+      children: groupedByName,
+    };
+  }).filter((entry) => entry.deals.length > 0);
+  const toggleSourceType = (type) => setExpandedSourceTypes((prev) => ({ ...prev, [type]: !prev[type] }));
   const gipRankingRows = hasInvalidRange ? [] : buildGipRankingReport(rangedDeals);
   const sortedGipRankingRows = [...gipRankingRows].sort((a, b) => {
     const direction = rankingSort.direction === "asc" ? 1 : -1;
@@ -1895,10 +2078,16 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: "12px", width: "100%", marginBottom: "20px" }}>
-        {[{ label: "Leads mới", val: rangedDeals.length, col: "#1a6fba", icon: "➕" }, { label: "Chuyển stage", val: movedInRange.length, col: "#b86e00", icon: "🔄" }, { label: "Deal Win", val: wonInRange.length, col: "#1a7a45", icon: "🏆" }, { label: "Rev. Win", val: revenueWin ? `${(revenueWin / 1e6).toFixed(0)}M₫` : "—", col: "#0e5fa3", icon: "💰" }, { label: "⚠️ Quá hạn", val: overdueDeals.length, col: overdueDeals.length > 0 ? "#c0392b" : "#90a8c0", icon: "🚨" }].map((c) => (
-          <div key={c.label} style={{ background: "#fff", border: `1px solid ${c.label === "⚠️ Quá hạn" && overdueDeals.length > 0 ? "#f0a898" : "#dde6f0"}`, borderRadius: "12px", padding: "14px 16px", boxShadow: "0 1px 4px rgba(0,80,160,0.07)" }}>
+        {[{ label: "Leads mới", val: rangedDeals.length, col: "#1a6fba", icon: "➕", type: "count" }, { label: "Chuyển stage", val: movedInRange.length, col: "#b86e00", icon: "🔄", type: "count" }, { label: "Deal Win", val: wonInRange.length, col: "#1a7a45", icon: "🏆", type: "count" }, { label: "Rev. Win", val: revenueWin, col: "#0e5fa3", icon: "💰", type: "currency" }, { label: "⚠️ Đang quá hạn", val: overdueDeals.length, col: overdueDeals.length > 0 ? "#c0392b" : "#90a8c0", icon: "🚨", type: "count" }].map((c) => (
+          <div key={c.label} style={{ background: "#fff", border: `1px solid ${c.label === "⚠️ Đang quá hạn" && overdueDeals.length > 0 ? "#f0a898" : "#dde6f0"}`, borderRadius: "12px", padding: "14px 16px", boxShadow: "0 1px 4px rgba(0,80,160,0.07)" }}>
             <div style={{ fontSize: "18px", marginBottom: "4px" }}>{c.icon}</div>
-            <div style={{ fontSize: "22px", fontWeight: "700", color: c.col, lineHeight: 1 }}>{hasInvalidRange ? "—" : c.val}</div>
+            <div style={{ fontSize: "22px", fontWeight: "700", color: c.col, lineHeight: 1 }}>
+              {hasInvalidRange
+                ? dashNode
+                : c.type === "currency"
+                  ? metricText(c.val, (n) => `${(n / 1e6).toFixed(0)}M₫`)
+                  : metricNode(c.val)}
+            </div>
             <div style={{ fontSize: "10px", color: "#90a8c0", marginTop: "4px" }}>{c.label.toUpperCase()}</div>
           </div>
         ))}
@@ -1916,19 +2105,100 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
             <div style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "13px", marginBottom: "14px" }}>👤 Hiệu suất PIC — {rangeLabel}</div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
-                <thead><tr style={{ borderBottom: "2px solid #dde6f0" }}>{["PIC", "Tổng leads", "Hot", "Win", "Revenue", "⚠️ Quá hạn"].map((h) => <th key={h} style={{ padding: "8px 12px", textAlign: "left", color: "#6080a0", fontWeight: "600", whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
+                <thead><tr style={{ borderBottom: "2px solid #dde6f0" }}>{["PIC", "Tổng leads", "Hot", "Win", "Revenue", "⚠️ Đang quá hạn"].map((h) => <th key={h} style={{ padding: "8px 12px", textAlign: "left", color: "#6080a0", fontWeight: "600", whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
                 <tbody>{picStats.map((p, i) => (
                   <tr key={p.pic} style={{ borderBottom: "1px solid #f0f4f8", background: i % 2 === 0 ? "#fafcff" : "#fff" }}>
                     <td style={{ padding: "8px 12px", fontWeight: "700", color: "#1a6fba" }}>{p.pic}</td>
-                    <td style={{ padding: "8px 12px" }}>{p.total}</td>
-                    <td style={{ padding: "8px 12px", color: "#c0392b", fontWeight: "600" }}>{p.hot}</td>
-                    <td style={{ padding: "8px 12px", color: "#1a7a45", fontWeight: "600" }}>{p.win}</td>
-                    <td style={{ padding: "8px 12px", color: "#b86e00", fontWeight: "600" }}>{p.rev > 0 ? `${(p.rev / 1e6).toFixed(0)}M₫` : "—"}</td>
-                    <td style={{ padding: "8px 12px", color: p.overdue > 0 ? "#c0392b" : "#90a8c0", fontWeight: p.overdue > 0 ? "700" : "400" }}>{p.overdue > 0 ? `⚠️ ${p.overdue}` : "✓ OK"}</td>
+                    <td style={{ padding: "8px 12px" }}>{metricNode(p.total)}</td>
+                    <td style={{ padding: "8px 12px", color: "#c0392b", fontWeight: "600" }}>{metricNode(p.hot)}</td>
+                    <td style={{ padding: "8px 12px", color: "#1a7a45", fontWeight: "600" }}>{metricNode(p.win)}</td>
+                    <td style={{ padding: "8px 12px", color: "#b86e00", fontWeight: "600" }}>{metricText(p.rev, (n) => `${(n / 1e6).toFixed(0)}M₫`)}</td>
+                    <td style={{ padding: "8px 12px", color: p.overdue > 0 ? "#c0392b" : "#90a8c0", fontWeight: p.overdue > 0 ? "700" : "400" }}>{p.overdue > 0 ? `⚠️ ${p.overdue}` : dashNode}</td>
                   </tr>
                 ))}</tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {!hasInvalidRange && (
+          <div style={{ background: "#fff", border: "1px solid #dde6f0", borderRadius: "12px", padding: "16px", gridColumn: "1/-1" }}>
+            <div style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "13px", marginBottom: "6px" }}>Lead theo nguồn (2 level)</div>
+            <div style={{ fontSize: "12px", color: "#6080a0", marginBottom: "14px" }}>Group theo Nguồn lớn → Nguồn chi tiết, đang áp dụng đúng bộ lọc PIC + khoảng ngày.</div>
+            {sourceReportRows.length === 0 ? (
+              <div style={{ fontSize: "12px", color: "#c0cfd8", textAlign: "center", padding: "16px 0" }}>Không có dữ liệu nguồn trong phạm vi hiện tại.</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: "11px", tableLayout: "fixed", minWidth: "980px" }}>
+                  <colgroup>
+                    <col style={{ width: "160px" }} />
+                    <col style={{ width: "180px" }} />
+                    <col />
+                    <col />
+                    <col />
+                    <col />
+                    <col />
+                    <col />
+                    <col />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      {[
+                        "Nguồn lớn",
+                        "Nguồn chi tiết",
+                        "Tổng lead",
+                        "📁 Data Thô",
+                        "❄️ Freeze",
+                        "🧊 Cold",
+                        "🌞 Warm",
+                        "🔥 Hot",
+                        "🏆 Win",
+                      ].map((h, idx) => (
+                        <th key={h} style={{ padding: "9px 8px", textAlign: idx < 2 ? "left" : "center", color: "#64748b", fontWeight: "700", whiteSpace: "nowrap", borderBottom: "1px solid #e8eef5", background: "#f8fbff" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sourceReportRows.flatMap((row, idx) => {
+                      const expanded = !!expandedSourceTypes[row.sourceType];
+                      const parent = (
+                        <tr key={`parent-${row.sourceType}`} style={{ background: idx % 2 === 0 ? "#f8fbff" : "#f5f9ff" }}>
+                          <td style={{ padding: "8px 6px", fontWeight: "700", color: "#1a2a3a" }}>
+                            <button type="button" onClick={() => toggleSourceType(row.sourceType)} style={{ background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: "700", color: "#1a2a3a", padding: 0, display: "flex", alignItems: "center", gap: "6px" }}>
+                              {expanded ? "▼" : "▶"} {row.sourceType}
+                            </button>
+                          </td>
+                          <td style={{ textAlign: "left", padding: "8px 8px", color: "#90a8c0" }}>Tổng nhóm</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px", fontWeight: "700" }}>{metricNode(row.deals.length)}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{metricNode(row.metrics["Data Thô"])}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{metricNode(row.metrics.Freeze)}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{metricNode(row.metrics.Cold)}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{metricNode(row.metrics.Warm)}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{metricNode(row.metrics.Hot)}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px", fontWeight: "700", color: "#1a7a45" }}>{metricNode(row.metrics.Win)}</td>
+                        </tr>
+                      );
+                      const children = expanded
+                        ? row.children.map((child) => (
+                            <tr key={`child-${row.sourceType}-${child.sourceName}`} style={{ background: "#ffffff" }}>
+                              <td style={{ padding: "7px 8px 7px 24px", color: "#64748b", borderBottom: "1px solid #f1f5f9" }}>{row.sourceType}</td>
+                              <td style={{ textAlign: "left", padding: "7px 8px", color: "#334155", borderBottom: "1px solid #f1f5f9" }}>{child.sourceName}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", fontWeight: "700" }}>{metricNode(child.deals.length)}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{metricNode(child.metrics["Data Thô"])}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{metricNode(child.metrics.Freeze)}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{metricNode(child.metrics.Cold)}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{metricNode(child.metrics.Warm)}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{metricNode(child.metrics.Hot)}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", color: "#1a7a45", fontWeight: "700", borderBottom: "1px solid #f1f5f9" }}>{metricNode(child.metrics.Win)}</td>
+                            </tr>
+                          ))
+                        : [];
+                      return [parent, ...children];
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
@@ -1958,23 +2228,23 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
                     {sortedGipRankingRows.map((row, index) => (
                       <tr key={row.gipCode} onClick={() => setReportPIC(row.gipCode)} style={{ borderBottom: "1px solid #f0f4f8", background: index % 2 === 0 ? "#fafcff" : "#fff", cursor: "pointer" }}>
                         <td style={{ padding: "9px 8px", textAlign: "left", fontWeight: "700", color: "#1a6fba" }}>{row.gipCode}</td>
-                        <td style={{ padding: "9px 6px", textAlign: "center", fontWeight: "700" }}>{row.totalDeals}</td>
-                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{row.interested}</td>
-                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{row.consultationStarted}</td>
-                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{row.meetingScheduled}</td>
-                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{row.rateCardSent}</td>
-                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{row.waitingForTestAds}</td>
-                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{row.waitingForShipping}</td>
-                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{row.onboardingStarted}</td>
-                        <td style={{ padding: "9px 6px", textAlign: "center", color: "#1a7a45", fontWeight: "700" }}>{row.won}</td>
-                        <td style={{ padding: "9px 6px", textAlign: "center", color: "#c0392b", fontWeight: "700" }}>{row.lost}</td>
+                        <td style={{ padding: "9px 6px", textAlign: "center", fontWeight: "700" }}>{metricNode(row.totalDeals)}</td>
+                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{metricNode(row.interested)}</td>
+                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{metricNode(row.consultationStarted)}</td>
+                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{metricNode(row.meetingScheduled)}</td>
+                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{metricNode(row.rateCardSent)}</td>
+                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{metricNode(row.waitingForTestAds)}</td>
+                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{metricNode(row.waitingForShipping)}</td>
+                        <td style={{ padding: "9px 6px", textAlign: "center" }}>{metricNode(row.onboardingStarted)}</td>
+                        <td style={{ padding: "9px 6px", textAlign: "center", color: "#1a7a45", fontWeight: "700" }}>{metricNode(row.won)}</td>
+                        <td style={{ padding: "9px 6px", textAlign: "center", color: "#c0392b", fontWeight: "700" }}>{metricNode(row.lost)}</td>
                         <td title={`Spam/Invalid: ${row.spamInvalidLead} · Wrong Info: ${row.wrongInfo} · Can't Contact: ${row.cantContact}`} style={{ padding: "9px 6px", textAlign: "center", fontSize: "10px", color: "#64748b", lineHeight: 1.3 }}>
-                          <span style={{ display: "block" }}>S:{row.spamInvalidLead}</span>
-                          <span style={{ display: "block" }}>W:{row.wrongInfo}</span>
-                          <span style={{ display: "block" }}>C:{row.cantContact}</span>
+                          <span style={{ display: "block" }}>S:{metricNode(row.spamInvalidLead)}</span>
+                          <span style={{ display: "block" }}>W:{metricNode(row.wrongInfo)}</span>
+                          <span style={{ display: "block" }}>C:{metricNode(row.cantContact)}</span>
                         </td>
-                        <td style={{ padding: "9px 6px", textAlign: "center", color: row.noStatus > 0 ? "#b86e00" : "#90a8c0", fontWeight: row.noStatus > 0 ? "700" : "400" }}>{row.noStatus}</td>
-                        <td style={{ padding: "9px 6px", textAlign: "center", color: "#1a6fba", fontWeight: "700" }}>{`${Math.round(row.winRate * 100)}%`}</td>
+                        <td style={{ padding: "9px 6px", textAlign: "center", color: row.noStatus > 0 ? "#b86e00" : "#90a8c0", fontWeight: row.noStatus > 0 ? "700" : "400" }}>{metricNode(row.noStatus)}</td>
+                        <td style={{ padding: "9px 6px", textAlign: "center", color: "#1a6fba", fontWeight: "700" }}>{metricText(Math.round(row.winRate * 100), (n) => `${n}%`)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1994,7 +2264,7 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
                 <div key={st} style={{ marginBottom: "8px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
                     <span style={{ fontSize: "11px", color: cfg.color, fontWeight: "600" }}>{cfg.icon} {st}</span>
-                    <span style={{ fontSize: "11px", color: "#6080a0", fontWeight: "600" }}>{cnt}</span>
+                    <span style={{ fontSize: "11px", color: "#6080a0", fontWeight: "600" }}>{metricNode(cnt)}</span>
                   </div>
                   <div style={{ background: "#f0f4f8", borderRadius: "4px", height: "5px" }}><div style={{ background: cfg.border, width: `${maxStageCount > 0 ? (cnt / maxStageCount) * 100 : 0}%`, height: "100%", borderRadius: "4px", transition: "width 0.5s" }} /></div>
                 </div>
@@ -2016,7 +2286,9 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
                   <span style={{ fontSize: "11px", color: fc.color, fontWeight: "600" }}>{fc.icon} {from}</span>
                   <span style={{ color: "#c0cfd8", fontSize: "12px" }}>→</span>
                   <span style={{ fontSize: "11px", color: tc.color, fontWeight: "600" }}>{tc.icon} {to}</span>
-                  <span style={{ marginLeft: "auto", fontSize: "12px", fontWeight: "700", color: overSLA ? "#c0392b" : val !== null ? "#1a6fba" : "#c0cfd8" }}>{hasInvalidRange ? "—" : val !== null ? `${val}n (SLA:${sla}n)` : "—"}</span>
+                  <span style={{ marginLeft: "auto", fontSize: "12px", fontWeight: "700", color: overSLA ? "#c0392b" : val !== null ? "#1a6fba" : "#c0cfd8" }}>
+                    {hasInvalidRange ? dashNode : metricText(val, (n) => `${n}n (SLA:${sla}n)`)}
+                  </span>
                 </div>
               );
             })}
@@ -2025,7 +2297,8 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
 
         <div className="report-row" style={{ display: "flex", gap: "16px", width: "100%", flexWrap: "wrap" }}>
           <div style={{ background: "#fff", border: "1.5px solid #f0a898", borderRadius: "12px", padding: "16px", flex: 1, minWidth: "340px" }}>
-            <div style={{ fontWeight: "700", color: "#c0392b", fontSize: "13px", marginBottom: "14px" }}>🚨 Danh sách KH quá hạn hiện tại</div>
+            <div style={{ fontWeight: "700", color: "#c0392b", fontSize: "13px", marginBottom: "10px" }}>🚨 Đang quá hạn</div>
+            <div style={{ fontSize: "11px", color: "#90a8c0", marginBottom: "8px" }}>Dựa trên bộ lọc PIC + khoảng ngày báo cáo.</div>
             <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "360px", overflowY: "auto", paddingRight: "2px" }}>
               {overdueDeals.length === 0 ? (
                 <div style={{ color: "#c0cfd8", fontSize: "12px", textAlign: "center", padding: "20px 0" }}>Không có khách hàng quá hạn trong phạm vi hiện tại.</div>
@@ -2077,10 +2350,11 @@ function AlertView({ alertDeals, onEdit }) {
 
   return (
     <div style={{ width: "100%", padding: "20px" }}>
+      <div style={{ fontSize: "12px", color: "#64748b", marginBottom: "10px" }}>Chế độ cảnh báo: <b>Đang quá hạn (real-time)</b>, không phụ thuộc bộ lọc ngày.</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: "12px", marginBottom: "18px" }}>
         {[
           { label: "Tổng cảnh báo", value: alertDeals.length, color: "#1a6fba", bg: "#f0f7ff" },
-          { label: "Cần xử lý ngay", value: criticalDeals.length, color: "#c0392b", bg: "#fff5f4" },
+          { label: "Đang quá hạn (real-time)", value: criticalDeals.length, color: "#c0392b", bg: "#fff5f4" },
           { label: "Sắp chạm hạn", value: warningDeals.length, color: "#b86e00", bg: "#fff8e6" },
         ].map((card) => (
           <div key={card.label} style={{ background: "#fff", border: "1px solid #dde6f0", borderRadius: "12px", padding: "14px 16px", boxShadow: "0 1px 4px rgba(0,80,160,0.07)" }}>
@@ -2097,7 +2371,7 @@ function AlertView({ alertDeals, onEdit }) {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
           {[
-            { title: "Cần xử lý ngay", subtitle: "Deal đã quá hạn SLA hoặc quá hạn gặp khách.", items: criticalDeals, border: "#f0a898", bg: "#fff5f4", color: "#c0392b" },
+            { title: "Đang quá hạn (real-time)", subtitle: "Deal đang quá hạn SLA hoặc quá hạn gặp khách tại thời điểm hiện tại.", items: criticalDeals, border: "#f0a898", bg: "#fff5f4", color: "#c0392b" },
             { title: "Sắp chạm hạn", subtitle: "Deal chưa quá hạn nhưng cần đẩy nhanh chăm sóc và cập nhật.", items: warningDeals, border: "#f0cc80", bg: "#fffbf0", color: "#b86e00" },
           ].filter((section) => section.items.length > 0).map((section) => (
             <div key={section.title} style={{ background: "#fff", border: `1.5px solid ${section.border}`, borderRadius: "14px", padding: "16px" }}>
