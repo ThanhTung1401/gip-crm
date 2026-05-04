@@ -1582,7 +1582,7 @@ export default function App() {
 
       {showAddOptions && <AddDealOptionsModal preset={addPreset} onSingleAdd={() => { setModalDeal({ stage: addPreset.stage || "Data Thô", pic: addPreset.pic || ownerMode || "" }); setShowAddOptions(false); }} onImport={() => { setShowImportModal(true); setShowAddOptions(false); }} onClose={() => setShowAddOptions(false)} />}
       {showImportModal && <ImportDealsModal preset={addPreset} ownerMode={ownerMode} onDownloadTemplate={exportImportTemplate} onImport={importDeals} onClose={() => setShowImportModal(false)} />}
-      {modalDeal !== null && <DealModal deal={modalDeal} ownerCodes={allOwnerCodes} authConfig={authConfig} onSave={saveDeal} onClose={() => setModalDeal(null)} ownerMode={ownerMode} isMaster={isMaster} currentRole={effectiveRole} currentTeam={effectiveTeam} />}
+      {modalDeal !== null && <DealModal deal={modalDeal} ownerCodes={allOwnerCodes} authConfig={authConfig} followupConfig={followupConfig} onSave={saveDeal} onClose={() => setModalDeal(null)} ownerMode={ownerMode} isMaster={isMaster} currentRole={effectiveRole} currentTeam={effectiveTeam} />}
       {canOpenSettings && showSetup && <SetupModal currentAccount={currentAccount} isMaster={isMaster} ownerCodes={ownerCodes} authConfig={authConfig} telegramConfig={telegramConfig} followupConfig={followupConfig} backendReady={backendReady} onSave={saveSettings} onTestTelegram={testTelegram} onRunScan={runAlertScan} onDownloadBackup={downloadBackup} onRestoreBackup={restoreBackup} onSyncFromOnline={syncFromOnline} onResetFilters={resetPipelineFilters} onClose={() => setShowSetup(false)} />}
     </div>
   );
@@ -2321,7 +2321,7 @@ function ImportDealsModal({ preset, ownerMode, onDownloadTemplate, onImport, onC
   );
 }
 
-function DealModal({ deal, ownerCodes, authConfig, onSave, onClose, ownerMode, isMaster, currentRole, currentTeam }) {
+function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClose, ownerMode, isMaster, currentRole, currentTeam }) {
   const isNew = !deal.id;
   const initDate = deal.dataInputDate ? toDisplayDate(deal.dataInputDate) : isNew ? toDisplayDate(new Date().toISOString()) : "";
   const initMeeting = deal.lastMeeting ? toDisplayDate(deal.lastMeeting) : "";
@@ -2434,8 +2434,8 @@ function DealModal({ deal, ownerCodes, authConfig, onSave, onClose, ownerMode, i
                   {STAGES.map((st) => {
                     const cfg = STAGE_CFG[st];
                     const active = f.stage === st;
-                    const sla = SLA_DAYS[st];
-                    return <button key={st} onClick={() => s("stage", st)} style={{ background: active ? cfg.badge : "#f4f8fc", border: `1.5px solid ${active ? cfg.border : "#dde6f0"}`, borderRadius: "8px", padding: "5px 12px", color: active ? cfg.color : "#90a8c0", fontSize: "12px", fontWeight: active ? "700" : "400", cursor: "pointer", fontFamily: "inherit" }}>{cfg.icon} {st}{sla ? <span style={{ fontSize: "9px", color: active ? cfg.color : "#b0c0d0", marginLeft: "3px" }}>({sla}n)</span> : null}</button>;
+                    const followupHours = Number(followupConfig?.[st] ?? 0);
+                    return <button key={st} onClick={() => s("stage", st)} style={{ background: active ? cfg.badge : "#f4f8fc", border: `1.5px solid ${active ? cfg.border : "#dde6f0"}`, borderRadius: "8px", padding: "5px 12px", color: active ? cfg.color : "#90a8c0", fontSize: "12px", fontWeight: active ? "700" : "400", cursor: "pointer", fontFamily: "inherit" }}>{cfg.icon} {st}{followupHours > 0 ? <span style={{ fontSize: "9px", color: active ? cfg.color : "#b0c0d0", marginLeft: "3px" }}>({followupHours}h)</span> : null}</button>;
                   })}
                 </div>
               </Field>
