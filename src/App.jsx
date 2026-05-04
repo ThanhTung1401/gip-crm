@@ -944,7 +944,7 @@ export default function App() {
   }, [loaded, currentAccount]);
 
   useEffect(() => {
-    if (!loaded || !hydratedFromBackend || !backendReady || !isAuthenticated) return;
+    if (!loaded || !hydratedFromBackend || !isAuthenticated) return;
     setSyncState("syncing");
     const timer = window.setTimeout(async () => {
       try {
@@ -968,7 +968,7 @@ export default function App() {
     }, 400);
 
     return () => window.clearTimeout(timer);
-  }, [ownerCodes, deals, authConfig, telegramConfig, followupConfig, loaded, hydratedFromBackend, backendReady, isAuthenticated, currentAccount, canManageMasterSettings]);
+  }, [ownerCodes, deals, authConfig, telegramConfig, followupConfig, loaded, hydratedFromBackend, isAuthenticated, currentAccount, canManageMasterSettings]);
 
   const applyAccessDefaultsToDeal = (deal) => {
     const nextPic = effectiveRole === DEFAULT_MASTER_ROLE ? deal.pic || "" : currentAccount;
