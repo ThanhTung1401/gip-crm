@@ -21,6 +21,7 @@ const MANAGER_ROLE = "MANAGER";
 const MASTER_ROLE = "MASTER";
 const STAGES = ["Data Thô", "Freeze", "Cold", "Warm", "Hot", "Win"];
 const DEAL_STATUS_OPTIONS = [
+  "Đã liên hệ",
   "New Lead",
   "Interested",
   "Consultation Started",
@@ -38,6 +39,7 @@ const DEAL_STATUS_OPTIONS = [
 const PLATFORMS = ["Facebook", "Shopee", "Tiktok", "Lazada", "Khác"];
 const LEAD_SOURCE_TYPE_OPTIONS = ["Cá nhân", "Công ty", "Sếp Loki"];
 const LEAD_SOURCE_DETAIL_OPTIONS = ["Facebook", "Zalo", "Group", "Khách giới thiệu", "Website", "Fanpage", "Tiktok", "Khác"];
+const MARKET_REGION_OPTIONS = ["Philippines", "Thái Lan", "Malaysia", "Indonesia", "Việt Nam", "Đa quốc gia"];
 const PLATFORM_ALIASES = {
   facebook: "Facebook",
   fb: "Facebook",
@@ -254,6 +256,9 @@ function normalizeLeadSourceType(value) {
 function normalizeLeadSourceDetail(value) {
   return LEAD_SOURCE_DETAIL_OPTIONS.includes(value) ? value : "";
 }
+function normalizeMarketRegion(value) {
+  return MARKET_REGION_OPTIONS.includes(value) ? value : "";
+}
 
 function buildLeadSource(type, detail) {
   if (type && detail) return `${type} - ${detail}`;
@@ -279,6 +284,7 @@ function validateDealsPayload(deals) {
     if (!isValidDealStatus(deal.deal_status)) throw new Error("deal_status_invalid");
     if (deal.lead_source_type !== undefined && deal.lead_source_type !== null && deal.lead_source_type !== "" && !normalizeLeadSourceType(deal.lead_source_type)) throw new Error("lead_source_type_invalid");
     if (deal.lead_source_detail !== undefined && deal.lead_source_detail !== null && deal.lead_source_detail !== "" && !normalizeLeadSourceDetail(deal.lead_source_detail)) throw new Error("lead_source_detail_invalid");
+    if (deal.marketRegion !== undefined && deal.marketRegion !== null && deal.marketRegion !== "" && !normalizeMarketRegion(deal.marketRegion)) throw new Error("market_region_invalid");
   }
 }
 
@@ -587,6 +593,7 @@ function normalizeState(raw, options = {}) {
   let deals = Array.isArray(raw?.deals) ? raw.deals.map(normalizeDeal).filter(Boolean) : [];
   let authPatched = 0;
   let teamPatched = 0;
+  let stagePatched = 0;
   const authConfig = { ...base.authConfig };
   buildAllOwnerCodes(ownerCodes).forEach((pic) => {
     const before = raw?.authConfig?.[pic];
@@ -611,12 +618,22 @@ function normalizeState(raw, options = {}) {
   });
   const alertLog = raw?.alertLog && typeof raw.alertLog === "object" ? raw.alertLog : {};
   deals = deals.map((deal) => {
-    if (TEAM_OPTIONS.includes(deal.team)) return deal;
-    teamPatched += 1;
-    return { ...deal, team: getAuthEntry(authConfig, deal.pic, ownerCodes).team };
+    const stageRaw = String(deal.stage || "").trim();
+    const stageAscii = stageRaw
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .trim();
+    const mappedFromTiepCan = stageAscii === "tiep can" || stageAscii === "tiepcan";
+    const nextStage = STAGES.includes(stageRaw) ? stageRaw : mappedFromTiepCan ? "Cold" : "Data Thô";
+    const nextStatus = mappedFromTiepCan ? (deal.deal_status || "Đã liên hệ") : deal.deal_status;
+    const nextTeam = TEAM_OPTIONS.includes(deal.team) ? deal.team : getAuthEntry(authConfig, deal.pic, ownerCodes).team;
+    if (nextTeam !== deal.team) teamPatched += 1;
+    if (nextStage !== deal.stage || nextStatus !== deal.deal_status) stagePatched += 1;
+    return { ...deal, team: nextTeam, stage: nextStage, deal_status: nextStatus };
   });
-  if (options.logSource === "disk" && (authPatched > 0 || teamPatched > 0)) {
-    console.info(`[state] Migration applied on load: authPatched=${authPatched}, dealTeamPatched=${teamPatched}`);
+  if (options.logSource === "disk" && (authPatched > 0 || teamPatched > 0 || stagePatched > 0)) {
+    console.info(`[state] Migration applied on load: authPatched=${authPatched}, dealTeamPatched=${teamPatched}, dealStagePatched=${stagePatched}`);
   }
 
   return {
@@ -654,6 +671,7 @@ function normalizeDeal(deal) {
     value: Number(deal.value) || 0,
     maKH: typeof deal.maKH === "string" ? deal.maKH : "",
     bangGia: typeof deal.bangGia === "string" ? deal.bangGia : "",
+    marketRegion: normalizeMarketRegion(deal.marketRegion),
     deal_status: DEAL_STATUS_OPTIONS.includes(deal.deal_status) ? deal.deal_status : null,
     dataInputDate: typeof deal.dataInputDate === "string" ? deal.dataInputDate : "",
     lastMeeting: typeof deal.lastMeeting === "string" ? deal.lastMeeting : "",

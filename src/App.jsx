@@ -41,6 +41,15 @@ const DEFAULT_MASTER_ROLE = "MASTER";
 const BANG_GIA = ["GP01", "GP02", "GP03", "Enterprise", "Custom"];
 const LEAD_SOURCE_TYPE_OPTIONS = ["Cá nhân", "Công ty", "Sếp Loki"];
 const LEAD_SOURCE_DETAIL_OPTIONS = ["Facebook", "Zalo", "Group", "Khách giới thiệu", "Website", "Fanpage", "Tiktok", "Khác"];
+const MARKET_REGION_OPTIONS = ["Philippines", "Thái Lan", "Malaysia", "Indonesia", "Việt Nam", "Đa quốc gia"];
+const MARKET_REGION_FLAG = {
+  Philippines: "🇵🇭",
+  "Thái Lan": "🇹🇭",
+  Malaysia: "🇲🇾",
+  Indonesia: "🇮🇩",
+  "Việt Nam": "🇻🇳",
+  "Đa quốc gia": "🌍",
+};
 
 const SLA_DAYS = {
   "Data Thô": 15,
@@ -365,6 +374,7 @@ const DEFAULT_API_BASE =
 const API_BASE = String(import.meta.env.VITE_API_BASE || DEFAULT_API_BASE).replace(/\/+$/, "");
 const normalizeLeadSourceType = (value) => (LEAD_SOURCE_TYPE_OPTIONS.includes(value) ? value : "");
 const normalizeLeadSourceDetail = (value) => (LEAD_SOURCE_DETAIL_OPTIONS.includes(value) ? value : "");
+const normalizeMarketRegion = (value) => (MARKET_REGION_OPTIONS.includes(value) ? value : "");
 const buildLeadSource = (type, detail) => (type && detail ? `${type} - ${detail}` : detail || type || "");
 const parseLegacyLeadSource = (rawValue) => {
   const text = String(rawValue || "").trim();
@@ -699,6 +709,7 @@ const importHeaderAliases = {
   bangGia: ["banggia", "pricebook", "goi", "package"],
   dataInputDate: ["datainputdate", "ngaynhapdata", "ngaynhap", "createddate"],
   lastMeeting: ["lastmeeting", "gaplancuoi", "ngaygapcuoi", "meetingdate"],
+  marketRegion: ["thitruong", "thịtrường", "marketregion", "targetmarket", "market"],
   notes: ["notes", "ghichu", "note"],
 };
 
@@ -749,7 +760,7 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
     const source = buildLeadSource(lead_source_type, lead_source_detail) || legacySource.source || rawSource;
     const noteText = String(getImportValue(normalizedRow, importHeaderAliases.notes) || "").trim();
     const dataInputDate = parseExcelDateToISO(getImportValue(normalizedRow, importHeaderAliases.dataInputDate)) || now;
-    const lastMeeting = parseExcelDateToISO(getImportValue(normalizedRow, importHeaderAliases.lastMeeting)) || "";
+    const marketRegion = normalizeMarketRegion(String(getImportValue(normalizedRow, importHeaderAliases.marketRegion) || "").trim());
 
     return {
       id: `${Date.now()}_${index}_${Math.random().toString(36).slice(2, 8)}`,
@@ -769,7 +780,7 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
       maKH: String(getImportValue(normalizedRow, importHeaderAliases.maKH) || "").trim(),
       bangGia: String(getImportValue(normalizedRow, importHeaderAliases.bangGia) || "").trim(),
       dataInputDate,
-      lastMeeting,
+      marketRegion,
       notes: noteText ? [{ text: noteText, date: now }] : [],
       createdAt: now,
       updatedAt: now,
@@ -783,8 +794,8 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
 const exportImportTemplate = () => {
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet([
-    ["Brand", "Contact", "Phone", "ADO", "Lead Source Type", "Lead Source Detail", "Source", "Platform", "DataInputDate", "PIC", "Stage", "Deal Status", "Value", "MaKH", "BangGia", "LastMeeting", "Notes"],
-    ["Cafune", "Linh", "0901234567", "120", "Cá nhân", "Facebook", "Cá nhân - Facebook", "Facebook, Shopee", "14/04/2026", "GIP01", "Data Thô", "New Lead", "50000000", "", "", "", "Khách mới, cần gọi tư vấn"],
+    ["Brand", "Contact", "Phone", "ADO", "Lead Source Type", "Lead Source Detail", "Source", "Platform", "DataInputDate", "PIC", "Stage", "Deal Status", "Value", "MaKH", "BangGia", "Thị trường", "Notes"],
+    ["Cafune", "Linh", "0901234567", "120", "Cá nhân", "Facebook", "Cá nhân - Facebook", "Facebook, Shopee", "14/04/2026", "GIP01", "Data Thô", "New Lead", "50000000", "", "", "Philippines", "Khách mới, cần gọi tư vấn"],
   ]);
   ws["!cols"] = [18, 16, 14, 10, 16, 16, 20, 20, 14, 10, 12, 20, 14, 12, 12, 14, 30].map((w) => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, "Mau Import");
@@ -800,7 +811,8 @@ const exportImportTemplate = () => {
     [`7. Platform hợp lệ: ${PLATFORMS.join(", ")}. Có thể nhập nhiều giá trị, ngăn cách bằng dấu phẩy`],
     ["8. Stage hợp lệ: Data Thô, Freeze, Cold, Warm, Hot, Win"],
     [`9. Deal Status hợp lệ: ${DEAL_STATUS_OPTIONS.join(", ")}`],
-    ["10. Nếu import từ link owner, PIC sẽ tự khóa theo owner đó"],
+    [`10. Thi truong hop le: ${MARKET_REGION_OPTIONS.join(", ")}`],
+    ["11. Nếu import từ link owner, PIC sẽ tự khóa theo owner đó"],
   ]);
   guide["!cols"] = [{ wch: 70 }];
   XLSX.utils.book_append_sheet(wb, guide, "Huong Dan");
@@ -1786,6 +1798,7 @@ function DealCard({ deal, cfg, isDragging, onDragStart, onDragEnd, onEdit, onDel
       <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
         {deal.pic && <div style={{ fontSize: "9px", color: "#fff", background: cfg.color, borderRadius: "999px", padding: "3px 8px", display: "inline-block", fontWeight: "700" }}>{deal.pic}</div>}
         {deal.deal_status && <span style={{ ...getDealStatusBadgeStyle(deal.deal_status), padding: "3px 8px", fontSize: "10px" }}>{deal.deal_status}</span>}
+        {deal.marketRegion && <span style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "999px", padding: "3px 8px", fontSize: "10px", color: "#9a3412", fontWeight: "700" }}>{MARKET_REGION_FLAG[deal.marketRegion] || "🌍"} {deal.marketRegion}</span>}
       </div>
       {deal.contact && <div title={deal.contact} style={{ fontSize: "10px", color: "#6080a0", marginTop: "6px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>👤 {deal.contact}</div>}
       {deal.phone && <div style={{ fontSize: "10px", color: "#6080a0", marginTop: "2px" }}>📞 {deal.phone}</div>}
@@ -2444,7 +2457,7 @@ function AlertView({ alertDeals, onEdit }) {
                             {deal.contact ? `Liên hệ: ${deal.contact}` : "Chưa có người liên hệ"} {deal.phone ? `· ${deal.phone}` : ""}
                           </div>
                           <div style={{ fontSize: "12px", color: "#6080a0", marginTop: "4px" }}>
-                            Nhập data: {fmtDate(deal.dataInputDate || deal.createdAt) || "—"} {deal.lastMeeting ? `· Gặp KH gần nhất: ${fmtDate(deal.lastMeeting)}` : ""}
+                            Nhập data: {fmtDate(deal.dataInputDate || deal.createdAt) || "—"}
                           </div>
                         </div>
 
@@ -2642,11 +2655,9 @@ function ImportDealsModal({ preset, ownerMode, onDownloadTemplate, onImport, onC
 function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClose, ownerMode, isMaster, currentRole, currentTeam }) {
   const isNew = !deal.id;
   const initDate = deal.dataInputDate ? toDisplayDate(deal.dataInputDate) : isNew ? toDisplayDate(new Date().toISOString()) : "";
-  const initMeeting = deal.lastMeeting ? toDisplayDate(deal.lastMeeting) : "";
   const sourceLegacy = parseLegacyLeadSource(deal?.lead_source || deal?.source);
-  const [f, setF] = useState({ brand: "", contact: "", phone: "", ado: "", team: currentRole === DEFAULT_MASTER_ROLE ? "" : currentTeam, platform: [], stage: "Data Thô", pic: ownerMode || "", lead_source_type: sourceLegacy.lead_source_type, lead_source_detail: sourceLegacy.lead_source_detail, source: sourceLegacy.source, lead_source: sourceLegacy.source, value: "", maKH: "", bangGia: "", ...deal, deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "", notes: parseNotes(deal.notes) });
+  const [f, setF] = useState({ brand: "", contact: "", phone: "", ado: "", team: currentRole === DEFAULT_MASTER_ROLE ? "" : currentTeam, platform: [], stage: "Data Thô", pic: ownerMode || "", lead_source_type: sourceLegacy.lead_source_type, lead_source_detail: sourceLegacy.lead_source_detail, source: sourceLegacy.source, lead_source: sourceLegacy.source, value: "", maKH: "", bangGia: "", marketRegion: "", ...deal, deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "", notes: parseNotes(deal.notes) });
   const [dateInput, setDateInput] = useState(initDate);
-  const [meetingInput, setMeetingInput] = useState(initMeeting);
   const [newNote, setNewNote] = useState("");
   const s = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const syncPicForMaster = (pic) => {
@@ -2664,11 +2675,11 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
   const handleSave = () => {
     if (!f.brand.trim()) return window.alert("Vui lòng nhập tên Brand!");
     const isoDate = toISODate(dateInput) || new Date().toISOString();
-    const isoMeeting = toISODate(meetingInput) || "";
     const lead_source_type = normalizeLeadSourceType(f.lead_source_type);
     const lead_source_detail = normalizeLeadSourceDetail(f.lead_source_detail);
+    const marketRegion = normalizeMarketRegion(f.marketRegion);
     const source = buildLeadSource(lead_source_type, lead_source_detail) || String(f.source || "").trim();
-    onSave({ ...f, lead_source_type, lead_source_detail, lead_source: source, source, dataInputDate: isoDate, lastMeeting: isoMeeting });
+    onSave({ ...f, lead_source_type, lead_source_detail, marketRegion, lead_source: source, source, dataInputDate: isoDate, lastMeeting: "" });
   };
 
   return (
@@ -2720,7 +2731,12 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
                 </div>
               </Field>
               <Field label="Ngày nhập data"><Inp value={dateInput} onChange={setDateInput} placeholder="DD/MM/YYYY" /></Field>
-              {(f.stage === "Warm" || f.stage === "Hot" || f.stage === "Win") && <Field label={`Gặp KH lần cuối ${MEETING_CADENCE[f.stage] ? `(cần gặp mỗi ${MEETING_CADENCE[f.stage]}n)` : ""}`}><Inp value={meetingInput} onChange={setMeetingInput} placeholder="DD/MM/YYYY" /></Field>}
+              <Field label="Thị trường">
+                <select value={f.marketRegion || ""} onChange={(e) => s("marketRegion", e.target.value)} style={dropdownStyle(f.marketRegion)}>
+                  <option value="">Chọn thị trường...</option>
+                  {MARKET_REGION_OPTIONS.map((market) => <option key={market} value={market}>{market}</option>)}
+                </select>
+              </Field>
             </div>
           </FormBlock>
 
