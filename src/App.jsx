@@ -837,6 +837,9 @@ export default function App() {
   const [reportFrom, setReportFrom] = useState(initialReportRange.from);
   const [reportTo, setReportTo] = useState(initialReportRange.to);
   const [reportPIC, setReportPIC] = useState("all");
+  const [reportSearch, setReportSearch] = useState("");
+  const [reportStage, setReportStage] = useState("");
+  const [reportDealStatus, setReportDealStatus] = useState("");
   const [backendReady, setBackendReady] = useState(false);
 
   const ownerMode = getOwnerFromURL();
@@ -1317,8 +1320,30 @@ export default function App() {
     setFilterToDate(value);
     setActiveDatePreset("");
   };
+  const applyReportDatePreset = (presetKey) => {
+    const next = buildDatePresetRange(presetKey);
+    setReportFrom(next.from);
+    setReportTo(next.to);
+  };
 
   const visibleDeals = filterDealsByAccess(deals, { owner: currentAccount, role: effectiveRole, team: effectiveTeam });
+  const reportBaseDeals = isMaster ? deals : visibleDeals;
+  const reportPicOptions = (() => {
+    if (effectiveRole === DEFAULT_USER_ROLE) return [currentAccount];
+    if (effectiveRole === DEFAULT_MANAGER_ROLE) {
+      const options = [...new Set(reportBaseDeals.map((deal) => deal.pic).filter(Boolean))];
+      if (!options.includes(currentAccount)) options.unshift(currentAccount);
+      return options;
+    }
+    return [...new Set(reportBaseDeals.map((deal) => deal.pic).filter(Boolean))];
+  })();
+  useEffect(() => {
+    if (effectiveRole === DEFAULT_USER_ROLE) {
+      if (reportPIC !== currentAccount) setReportPIC(currentAccount);
+      return;
+    }
+    if (reportPIC !== "all" && !reportPicOptions.includes(reportPIC)) setReportPIC("all");
+  }, [effectiveRole, currentAccount, reportPIC, reportPicOptions]);
   const picFilterOptions = (() => {
     if (effectiveRole === DEFAULT_MASTER_ROLE) return allOwnerCodes;
     const options = [...new Set(visibleDeals.map((deal) => deal.pic).filter(Boolean))];
@@ -1579,9 +1604,47 @@ export default function App() {
                   </div>
                 </div>
               )}
-              {tab === "report" && <Btn blue onClick={() => exportExcel(deals, `${reportFrom || "start"}_${reportTo || "end"}`)}>⬇ Xuất Excel</Btn>}
+              {tab === "report" && (
+                <div className="pipeline-toolbar">
+                  <div className="pipeline-toolbar-main">
+                    <input value={reportSearch} onChange={(e) => setReportSearch(e.target.value)} placeholder="Tìm theo brand, contact, phone..." style={{ ...dropdownStyle(reportSearch), width: "280px", minHeight: "38px" }} />
+                    <select value={reportStage} onChange={(e) => setReportStage(e.target.value)} style={{ ...dropdownStyle(reportStage), width: "150px", minHeight: "38px" }}>
+                      <option value="">Tất cả giai đoạn</option>
+                      {STAGES.map((stage) => <option key={stage} value={stage}>{stage}</option>)}
+                    </select>
+                    <select value={reportDealStatus} onChange={(e) => setReportDealStatus(e.target.value)} style={{ ...dropdownStyle(reportDealStatus), width: "165px", minHeight: "38px" }}>
+                      <option value="">Tất cả trạng thái</option>
+                      {DEAL_STATUS_OPTIONS.map((status) => <option key={status} value={status}>{status}</option>)}
+                    </select>
+                    {effectiveRole !== DEFAULT_USER_ROLE && (
+                      <select value={reportPIC} onChange={(e) => setReportPIC(e.target.value)} style={{ ...dropdownStyle(reportPIC), width: "140px", minHeight: "38px" }}>
+                        <option value="all">Tất cả PIC</option>
+                        {reportPicOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                      </select>
+                    )}
+                    <div className="pipeline-date-group">
+                      <span style={{ fontSize: "12px", color: UI.muted }}>📅</span>
+                      <input aria-label="Từ ngày" type="date" value={reportFrom} onChange={(e) => setReportFrom(e.target.value)} style={{ ...dropdownStyle(reportFrom), width: "140px", minHeight: "30px", padding: "5px 6px", background: "#f8fafc", border: "none", boxShadow: "none" }} />
+                    </div>
+                    <div className="pipeline-date-group">
+                      <span style={{ fontSize: "12px", color: UI.muted }}>📅</span>
+                      <input aria-label="Đến ngày" type="date" value={reportTo} onChange={(e) => setReportTo(e.target.value)} style={{ ...dropdownStyle(reportTo), width: "140px", minHeight: "30px", padding: "5px 6px", background: "#f8fafc", border: "none", boxShadow: "none" }} />
+                    </div>
+                    <div className="pipeline-preset-group">
+                      {[{ key: 1, label: "Hôm nay" }, { key: 7, label: "7 ngày" }, { key: 30, label: "30 ngày" }, { key: "month", label: "Tháng này" }].map((preset) => (
+                        <button key={preset.key} type="button" onClick={() => applyReportDatePreset(preset.key)} style={{ border: "1px solid #dbe4ef", background: "#f8fafc", color: UI.muted, fontSize: "11px", fontWeight: "700", borderRadius: "999px", padding: "6px 9px", height: "38px", cursor: "pointer", fontFamily: "inherit" }}>
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="pipeline-toolbar-actions">
+                    <Btn blue onClick={() => exportExcel(deals, `${reportFrom || "start"}_${reportTo || "end"}`)}>⬇ Xuất Excel</Btn>
+                    {canOpenSettings && <Btn onClick={() => setShowSetup(true)}>⚙ Cài đặt</Btn>}
+                  </div>
+                </div>
+              )}
               {requiresLogin && <Btn onClick={logout}>Đăng xuất</Btn>}
-              {tab === "report" && canOpenSettings && <Btn onClick={() => setShowSetup(true)}>⚙ Cài đặt</Btn>}
             </div>
           </div>
 
@@ -1618,7 +1681,7 @@ export default function App() {
 
             {tab === "pipeline" && <KanbanBoard deals={filtered} dragOver={dragOver} setDragOver={setDragOver} draggingId={draggingId} setDraggingId={setDraggingId} moveDeal={moveDeal} onEdit={(d) => setModalDeal(d)} onDelete={deleteDeal} onAdd={(stage) => openAddOptions({ stage, pic: ownerMode || "" })} />}
             {tab === "alerts" && <AlertView alertDeals={alertDeals} onEdit={(deal) => setModalDeal(deal)} />}
-            {tab === "report" && <ReportView deals={isMaster ? deals : visibleDeals} ownerCodes={allOwnerCodes} reportFrom={reportFrom} setReportFrom={setReportFrom} reportTo={reportTo} setReportTo={setReportTo} reportPIC={ownerMode || reportPIC} setReportPIC={setReportPIC} isMaster={isMaster} followupConfig={followupConfig} />}
+            {tab === "report" && <ReportView deals={isMaster ? deals : visibleDeals} ownerCodes={allOwnerCodes} reportFrom={reportFrom} reportTo={reportTo} reportPIC={ownerMode || reportPIC} setReportPIC={setReportPIC} reportSearch={reportSearch} reportStage={reportStage} reportDealStatus={reportDealStatus} isMaster={isMaster} followupConfig={followupConfig} />}
           </div>
         </div>
       </div>
@@ -1786,7 +1849,7 @@ function DealCard({ deal, cfg, isDragging, onDragStart, onDragEnd, onEdit, onDel
   );
 }
 
-function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, setReportTo, reportPIC, setReportPIC, isMaster, followupConfig }) {
+function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setReportPIC, reportSearch, reportStage, reportDealStatus, isMaster, followupConfig }) {
   const [rankingSort, setRankingSort] = useState({ key: "totalDeals", direction: "desc" });
   const [expandedSourceTypes, setExpandedSourceTypes] = useState({});
   const dashNode = <span style={{ color: "#94a3b8", fontWeight: "500" }}>-</span>;
@@ -1800,7 +1863,6 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
     if (!Number.isFinite(n) || n === 0) return dashNode;
     return formatter ? formatter(n) : String(n);
   };
-  const picDeals = reportPIC === "all" ? deals : deals.filter((d) => d.pic === reportPIC);
   const hasInvalidRange = !!reportFrom && !!reportTo && startOfDay(reportFrom) > endOfDay(reportTo);
   const reportFromKey = normalizeDateOnly(reportFrom);
   const reportToKey = normalizeDateOnly(reportTo);
@@ -1814,13 +1876,20 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
     if (reportToKey && inputDateKey > reportToKey) return false;
     return true;
   };
-  const setPreset = (preset) => {
-    const next = buildDatePresetRange(preset);
-    setReportFrom(next.from);
-    setReportTo(next.to);
-  };
-
-  const rangedDeals = picDeals.filter((d) => isDealInputDateInRange(d));
+  const searchText = normalizeSearchText(reportSearch);
+  const searchPhone = normalizePhoneText(reportSearch);
+  const rangedDeals = deals.filter((d) => {
+    const ms =
+      !searchText ||
+      normalizeSearchText(d.brand).includes(searchText) ||
+      normalizeSearchText(d.contact).includes(searchText) ||
+      (searchPhone && normalizePhoneText(d.phone).includes(searchPhone));
+    const mst = !reportStage || d.stage === reportStage;
+    const mds = matchDealStatusFilter(d.deal_status, reportDealStatus);
+    const mp = !reportPIC || reportPIC === "all" || d.pic === reportPIC;
+    const md = isDealInputDateInRange(d);
+    return ms && mst && mds && mp && md;
+  });
   const movedInRange = hasInvalidRange
     ? []
     : rangedDeals.flatMap((d) =>
@@ -1840,13 +1909,19 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
   const wonInRange = rangedDeals.filter((d) => (Array.isArray(d.stageHistory) ? d.stageHistory : []).some((x) => x.to === "Win"));
   const revenueWin = wonInRange.reduce((s, d) => s + (Number(d.value) || 0), 0);
   const overdueDealsInRange = rangedDeals.filter((d) => isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT));
-  const realtimeOverdueByPic = picDeals.filter((d) => isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT));
+  const realtimeOverdueByPic = deals.filter((d) => {
+    const mp = !reportPIC || reportPIC === "all" || d.pic === reportPIC;
+    return mp && isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT);
+  });
   const overdueDeals = overdueDealsInRange;
 
   useEffect(() => {
     console.info("[Report Debug]", {
       mode: "current-overdue-snapshot",
       filters: {
+        search: reportSearch || "",
+        stage: reportStage || "all",
+        dealStatus: reportDealStatus || "all",
         pic: reportPIC || "all",
         from: reportFrom || null,
         to: reportTo || null,
@@ -1856,7 +1931,7 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
       overdueInRange: overdueDealsInRange.length,
       shownOverdue: overdueDeals.length,
     });
-  }, [reportPIC, reportFrom, reportTo, rangedDeals, realtimeOverdueByPic, overdueDealsInRange, overdueDeals]);
+  }, [reportSearch, reportStage, reportDealStatus, reportPIC, reportFrom, reportTo, rangedDeals, realtimeOverdueByPic, overdueDealsInRange, overdueDeals]);
 
   const avgDays = {};
   STAGES.forEach((st, i) => {
@@ -1878,8 +1953,7 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
 
   const picStats = ownerCodes
     .map((pic) => {
-      const pd = deals.filter((d) => d.pic === pic);
-      const leads = pd.filter((d) => isDealInputDateInRange(d));
+      const leads = rangedDeals.filter((d) => d.pic === pic);
       const wins = leads.filter((d) => (Array.isArray(d.stageHistory) ? d.stageHistory : []).some((x) => x.to === "Win"));
       return {
         pic,
@@ -2016,13 +2090,6 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
   });
   const emptyRange = !hasInvalidRange && rangedDeals.length === 0 && movedInRange.length === 0 && wonInRange.length === 0;
   const rangeLabel = reportFrom && reportTo ? `${fmtDate(reportFrom)} - ${fmtDate(reportTo)}` : "Toàn bộ thời gian";
-  const presetButtons = [
-    { key: 7, label: "7 ngày" },
-    { key: 10, label: "10 ngày" },
-    { key: 30, label: "30 ngày" },
-    { key: 90, label: "90 ngày" },
-    { key: "month", label: "Tháng này" },
-  ];
   const rankingColumns = [
     { key: "gipCode", label: "Mã GIP", title: "Mã GIP con", sortable: false, align: "left", width: "12%" },
     { key: "totalDeals", label: "Tổng", title: "Tổng deal", sortable: true, width: "7%" },
@@ -2048,29 +2115,6 @@ function ReportView({ deals, ownerCodes, reportFrom, setReportFrom, reportTo, se
 
   return (
     <div style={{ width: "100%", padding: "20px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px", flexWrap: "wrap" }}>
-        <span style={{ fontFamily: "'Playfair Display',serif", fontSize: "17px", color: "#1a6fba" }}>📊 Báo cáo</span>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontSize: "10px", color: "#90a8c0", fontWeight: "700", marginBottom: "4px" }}>FROM</div>
-            <Inp type="date" value={reportFrom} onChange={setReportFrom} />
-          </div>
-          <div>
-            <div style={{ fontSize: "10px", color: "#90a8c0", fontWeight: "700", marginBottom: "4px" }}>TO</div>
-            <Inp type="date" value={reportTo} onChange={setReportTo} />
-          </div>
-        </div>
-        <div style={{ display: "flex", background: "#f0f4f8", borderRadius: "8px", padding: "3px", gap: "2px", flexWrap: "wrap" }}>
-          {presetButtons.map((preset) => (
-            <button key={preset.label} onClick={() => setPreset(preset.key)} style={{ background: "transparent", border: "none", borderRadius: "6px", padding: "5px 10px", color: "#1a6fba", fontWeight: "600", fontSize: "12px", cursor: "pointer", fontFamily: "inherit" }}>{preset.label}</button>
-          ))}
-        </div>
-        {isMaster && <div style={{ display: "flex", background: "#f0f4f8", borderRadius: "8px", padding: "3px", gap: "2px", flexWrap: "wrap" }}>
-          <button onClick={() => setReportPIC("all")} style={{ background: reportPIC === "all" ? "#fff" : "transparent", border: "none", borderRadius: "6px", padding: "5px 12px", color: reportPIC === "all" ? "#1a6fba" : "#90a8c0", fontWeight: reportPIC === "all" ? "700" : "400", fontSize: "12px", cursor: "pointer", fontFamily: "inherit" }}>Tất cả</button>
-          {ownerCodes.map((p) => <button key={p} onClick={() => setReportPIC(p)} style={{ background: reportPIC === p ? "#fff" : "transparent", border: "none", borderRadius: "6px", padding: "5px 12px", color: reportPIC === p ? "#1a6fba" : "#90a8c0", fontWeight: reportPIC === p ? "700" : "400", fontSize: "12px", cursor: "pointer", fontFamily: "inherit" }}>{p}</button>)}
-        </div>}
-      </div>
-
       {hasInvalidRange && (
         <div style={{ background: "#fff5f4", border: "1px solid #f0a898", borderRadius: "10px", padding: "12px 14px", color: "#c0392b", fontSize: "12px", fontWeight: "600", marginBottom: "16px" }}>
           Ngày From không được lớn hơn ngày To.
