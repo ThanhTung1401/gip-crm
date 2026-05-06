@@ -1049,20 +1049,20 @@ export default function App() {
     const currentDeals = deals;
     let targetDealId = deal.id;
     let expectedStage = nextDeal.stage || "Data Thô";
-    const nextDeals = deal.id
-      ? currentDeals.map((d) => {
+    const applyDealChange = (baseDeals, stamp) => deal.id
+      ? baseDeals.map((d) => {
           if (d.id !== deal.id) return d;
           const history = Array.isArray(d.stageHistory) ? [...d.stageHistory] : [];
           if (d.stage !== nextDeal.stage) history.push({ from: d.stage, to: nextDeal.stage, date: now });
-          return { ...nextDeal, stageHistory: history, updatedAt: now };
+          return { ...nextDeal, stageHistory: history, updatedAt: stamp };
         })
       : (() => {
           const newDeal = {
             ...nextDeal,
             id: Date.now().toString(),
             stage: nextDeal.stage || "Data Thô",
-            createdAt: now,
-            updatedAt: now,
+            createdAt: stamp,
+            updatedAt: stamp,
             dataInputDate: nextDeal.dataInputDate || now,
             notes: parseNotes(nextDeal.notes),
             stageHistory: [{ from: null, to: nextDeal.stage || "Data Thô", date: nextDeal.dataInputDate || now }],
@@ -1070,8 +1070,9 @@ export default function App() {
           if (ownerMode && !newDeal.pic) newDeal.pic = ownerMode;
           targetDealId = newDeal.id;
           expectedStage = newDeal.stage;
-          return [...currentDeals, newDeal];
+          return [...baseDeals, newDeal];
         })();
+    const nextDeals = applyDealChange(currentDeals, now);
 
     setDeals(nextDeals);
     try {
@@ -1104,6 +1105,42 @@ export default function App() {
       console.info("[saveDeal] persisted", { dealId: targetDealId, stage: persisted.stage, actor: currentAccount, updatedAt: latest.updatedAt });
       return { ok: true };
     } catch (error) {
+      if (error?.status === 409) {
+        try {
+          const latest = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+          const retryNow = new Date().toISOString();
+          const retriedDeals = applyDealChange(normalizeDeals(latest.deals || []), retryNow);
+          const retryWrite = await apiRequest("/state", {
+            method: "POST",
+            body: JSON.stringify({
+              actorOwner: currentAccount,
+              baseUpdatedAt: latest.updatedAt || undefined,
+              ownerCodes: canManageMasterSettings ? ownerCodes : undefined,
+              deals: retriedDeals,
+              authConfig: canManageMasterSettings ? authConfig : undefined,
+              telegramConfig: { [currentAccount]: telegramConfig[currentAccount] || { botToken: "", chatId: "" } },
+              followupConfig: canManageMasterSettings ? followupConfig : undefined,
+            }),
+          });
+          setBackendUpdatedAt(typeof retryWrite.updatedAt === "string" ? retryWrite.updatedAt : "");
+          const verify = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+          setDeals(normalizeDeals(verify.deals));
+          if (verify.ownerCodes) setOwnerCodes(normalizeOwnerCodes(verify.ownerCodes));
+          if (verify.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(verify.authConfig, verify.ownerCodes || ownerCodes) }));
+          if (verify.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(verify.telegramConfig, verify.ownerCodes || ownerCodes) }));
+          if (verify.followupConfig) setFollowupConfig(normalizeFollowupConfig(verify.followupConfig));
+          setBackendUpdatedAt(typeof verify.updatedAt === "string" ? verify.updatedAt : "");
+          const persisted = (verify.deals || []).find((d) => d.id === targetDealId);
+          if (!persisted || persisted.stage !== expectedStage) {
+            return { ok: false, error: "Lưu không thành công, dữ liệu chưa được cập nhật trên server." };
+          }
+          setBackendReady(true);
+          setModalDeal(null);
+          return { ok: true };
+        } catch {
+          return { ok: false, error: "Dữ liệu vừa được cập nhật ở phiên khác. Vui lòng mở lại deal và lưu lại." };
+        }
+      }
       setBackendReady(false);
       try {
         const latest = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
