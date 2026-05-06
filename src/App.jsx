@@ -1160,16 +1160,63 @@ export default function App() {
     setShowAddOptions(true);
   };
 
-  const importDeals = (rows, preset = {}) => {
+  const importDeals = async (rows, preset = {}) => {
     const { importedDeals, skipped } = buildImportedDeals(rows, preset, ownerMode, ownerCodes);
     if (!importedDeals.length) {
       window.alert("Khong co dong hop le de import. Can it nhat cot Brand.");
       return;
     }
-    setDeals((prev) => [...prev, ...importedDeals.map((deal) => applyAccessDefaultsToDeal(deal))]);
-    setShowImportModal(false);
-    setShowAddOptions(false);
-    window.alert(`Da import ${importedDeals.length} deal${skipped ? `, bo qua ${skipped} dong khong hop le` : ""}.`);
+    const incomingDeals = importedDeals.map((deal) => applyAccessDefaultsToDeal(deal));
+    const expectedIds = new Set(incomingDeals.map((deal) => deal.id));
+    const optimisticDeals = [...deals, ...incomingDeals];
+    setDeals(optimisticDeals);
+
+    try {
+      const latest = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+      const latestDeals = normalizeDeals(latest.deals || []);
+      const mergedDeals = [...latestDeals, ...incomingDeals];
+      const writeResult = await apiRequest("/state", {
+        method: "POST",
+        body: JSON.stringify({
+          actorOwner: currentAccount,
+          baseUpdatedAt: latest.updatedAt || backendUpdatedAt || undefined,
+          ownerCodes: canManageMasterSettings ? ownerCodes : undefined,
+          deals: mergedDeals,
+          authConfig: canManageMasterSettings ? authConfig : undefined,
+          telegramConfig: { [currentAccount]: telegramConfig[currentAccount] || { botToken: "", chatId: "" } },
+          followupConfig: canManageMasterSettings ? followupConfig : undefined,
+        }),
+      });
+      setBackendUpdatedAt(typeof writeResult.updatedAt === "string" ? writeResult.updatedAt : backendUpdatedAt);
+      const verify = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+      const verifiedDeals = normalizeDeals(verify.deals || []);
+      const persistedCount = verifiedDeals.filter((deal) => expectedIds.has(deal.id)).length;
+      if (persistedCount !== incomingDeals.length) {
+        throw new Error("Import chưa được lưu đầy đủ trên server.");
+      }
+      setDeals(verifiedDeals);
+      if (verify.ownerCodes) setOwnerCodes(normalizeOwnerCodes(verify.ownerCodes));
+      if (verify.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(verify.authConfig, verify.ownerCodes || ownerCodes) }));
+      if (verify.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(verify.telegramConfig, verify.ownerCodes || ownerCodes) }));
+      if (verify.followupConfig) setFollowupConfig(normalizeFollowupConfig(verify.followupConfig));
+      setBackendUpdatedAt(typeof verify.updatedAt === "string" ? verify.updatedAt : "");
+      setBackendReady(true);
+      setShowImportModal(false);
+      setShowAddOptions(false);
+      window.alert(`Da import ${incomingDeals.length} deal${skipped ? `, bo qua ${skipped} dong khong hop le` : ""}.`);
+    } catch (error) {
+      setBackendReady(false);
+      try {
+        const rollback = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+        setDeals(normalizeDeals(rollback.deals || []));
+        if (rollback.ownerCodes) setOwnerCodes(normalizeOwnerCodes(rollback.ownerCodes));
+        if (rollback.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(rollback.authConfig, rollback.ownerCodes || ownerCodes) }));
+        if (rollback.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(rollback.telegramConfig, rollback.ownerCodes || ownerCodes) }));
+        if (rollback.followupConfig) setFollowupConfig(normalizeFollowupConfig(rollback.followupConfig));
+        setBackendUpdatedAt(typeof rollback.updatedAt === "string" ? rollback.updatedAt : "");
+      } catch {}
+      window.alert(`Import that bai: ${error.message || "Khong luu duoc len server."}`);
+    }
   };
 
   const deleteDeal = (id) => {
