@@ -435,7 +435,10 @@ const apiRequest = async (path, options = {}) => {
   });
   const json = await response.json().catch(() => ({}));
   if (!response.ok || json.ok === false) {
-    throw new Error(json.error || `request_failed_${response.status}`);
+    const err = new Error(json.error || `request_failed_${response.status}`);
+    err.status = response.status;
+    err.payload = json;
+    throw err;
   }
   return json;
 };
@@ -853,6 +856,7 @@ export default function App() {
   const [reportStage, setReportStage] = useState("");
   const [reportDealStatus, setReportDealStatus] = useState("");
   const [backendReady, setBackendReady] = useState(false);
+  const [backendUpdatedAt, setBackendUpdatedAt] = useState("");
 
   const ownerMode = getOwnerFromURL();
   const allOwnerCodes = buildAllOwnerCodes(ownerCodes);
@@ -971,12 +975,13 @@ export default function App() {
         const state = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
         if (ignore) return;
         setBackendReady(true);
-        setHydratedFromBackend(true);
         if (state.ownerCodes) setOwnerCodes(normalizeOwnerCodes(state.ownerCodes));
         setDeals(normalizeDeals(state.deals));
+        setBackendUpdatedAt(typeof state.updatedAt === "string" ? state.updatedAt : "");
         if (state.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(state.authConfig, state.ownerCodes || ownerCodes) }));
         if (state.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(state.telegramConfig, state.ownerCodes || ownerCodes) }));
         if (state.followupConfig) setFollowupConfig(normalizeFollowupConfig(state.followupConfig));
+        setHydratedFromBackend(true);
       } catch {
         if (!ignore) setBackendReady(false);
       }
@@ -997,6 +1002,7 @@ export default function App() {
           method: "POST",
           body: JSON.stringify({
             actorOwner: currentAccount,
+            baseUpdatedAt: backendUpdatedAt || undefined,
             ownerCodes: canManageMasterSettings ? ownerCodes : undefined,
             deals,
             authConfig: canManageMasterSettings ? authConfig : undefined,
@@ -1006,14 +1012,28 @@ export default function App() {
         });
         setBackendReady(true);
         setSyncState("success");
-      } catch {
+      } catch (error) {
+        if (error?.status === 409) {
+          try {
+            const latest = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+            setDeals(normalizeDeals(latest.deals));
+            if (latest.ownerCodes) setOwnerCodes(normalizeOwnerCodes(latest.ownerCodes));
+            if (latest.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(latest.authConfig, latest.ownerCodes || ownerCodes) }));
+            if (latest.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(latest.telegramConfig, latest.ownerCodes || ownerCodes) }));
+            if (latest.followupConfig) setFollowupConfig(normalizeFollowupConfig(latest.followupConfig));
+            setBackendUpdatedAt(typeof latest.updatedAt === "string" ? latest.updatedAt : "");
+            setSyncState("success");
+            setBackendReady(true);
+            return;
+          } catch {}
+        }
         setBackendReady(false);
         setSyncState("error");
       }
     }, 400);
 
     return () => window.clearTimeout(timer);
-  }, [ownerCodes, deals, authConfig, telegramConfig, followupConfig, loaded, hydratedFromBackend, isAuthenticated, currentAccount, canManageMasterSettings]);
+  }, [ownerCodes, deals, authConfig, telegramConfig, followupConfig, loaded, hydratedFromBackend, isAuthenticated, currentAccount, canManageMasterSettings, backendUpdatedAt]);
 
   const applyAccessDefaultsToDeal = (deal) => {
     const nextPic = effectiveRole === DEFAULT_MASTER_ROLE ? deal.pic || "" : currentAccount;
@@ -1095,11 +1115,13 @@ export default function App() {
         setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(state.authConfig, state.ownerCodes || ownerCodes) }));
         setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(state.telegramConfig, state.ownerCodes || ownerCodes) }));
         setFollowupConfig(normalizeFollowupConfig(state.followupConfig));
+        setBackendUpdatedAt(typeof state.updatedAt === "string" ? state.updatedAt : "");
       } else {
-        await apiRequest("/state", {
+        const result = await apiRequest("/state", {
           method: "POST",
           body: JSON.stringify({
             actorOwner: currentAccount,
+            baseUpdatedAt: backendUpdatedAt || undefined,
             ownerCodes: canManageMasterSettings ? ownerCodes : undefined,
             deals,
             authConfig: canManageMasterSettings ? authConfig : undefined,
@@ -1107,6 +1129,7 @@ export default function App() {
             followupConfig: canManageMasterSettings ? followupConfig : undefined,
           }),
         });
+        setBackendUpdatedAt(typeof result.updatedAt === "string" ? result.updatedAt : backendUpdatedAt);
       }
       setBackendReady(true);
       setSyncState("success");
@@ -1141,10 +1164,11 @@ export default function App() {
     }));
 
     try {
-      await apiRequest("/state", {
+      const result = await apiRequest("/state", {
         method: "POST",
         body: JSON.stringify({
           actorOwner: currentAccount,
+          baseUpdatedAt: backendUpdatedAt || undefined,
           ownerCodes: isMaster ? normalizedOwners : undefined,
           deals: isMaster ? nextDeals : deals,
           authConfig: isMaster ? normalizedAuth : undefined,
@@ -1152,6 +1176,7 @@ export default function App() {
           followupConfig: isMaster ? normalizedFollowup : undefined,
         }),
       });
+      setBackendUpdatedAt(typeof result.updatedAt === "string" ? result.updatedAt : backendUpdatedAt);
       setBackendReady(true);
     } catch {
       setBackendReady(false);
@@ -1262,6 +1287,7 @@ export default function App() {
       if (state.authConfig) setAuthConfig(normalizeAuthConfig(state.authConfig, state.ownerCodes || ownerCodes));
       if (state.telegramConfig) setTelegramConfig(normalizeTelegramConfig(state.telegramConfig, state.ownerCodes || ownerCodes));
       if (state.followupConfig) setFollowupConfig(normalizeFollowupConfig(state.followupConfig));
+      setBackendUpdatedAt(typeof state.updatedAt === "string" ? state.updatedAt : "");
       setBackendReady(true);
       window.alert(`Khôi phục dữ liệu thành công.\nBackup an toàn trước restore đã lưu tại: ${result?.preRestoreFile?.filePath || "backups/"}`);
     } catch (error) {
@@ -1279,6 +1305,7 @@ export default function App() {
       if (state.authConfig) setAuthConfig(normalizeAuthConfig(state.authConfig, state.ownerCodes || ownerCodes));
       if (state.telegramConfig) setTelegramConfig(normalizeTelegramConfig(state.telegramConfig, state.ownerCodes || ownerCodes));
       if (state.followupConfig) setFollowupConfig(normalizeFollowupConfig(state.followupConfig));
+      setBackendUpdatedAt(typeof state.updatedAt === "string" ? state.updatedAt : "");
       setBackendReady(true);
       window.alert(`Đã đồng bộ dữ liệu từ hệ thống online.\nSố records: ${result.records || 0}\nBackup dùng: ${result?.sourceBackupFile?.fileName || "live-backup"}`);
     } catch (error) {

@@ -974,6 +974,15 @@ async function route(req, res) {
     const body = await readBody(req);
     if (body.deals !== undefined) validateDealsPayload(body.deals);
     const current = loadState();
+    const baseUpdatedAt = typeof body.baseUpdatedAt === "string" ? body.baseUpdatedAt : "";
+    if (baseUpdatedAt && current.updatedAt && baseUpdatedAt !== current.updatedAt) {
+      sendJson(res, 409, {
+        ok: false,
+        error: "state_conflict",
+        currentUpdatedAt: current.updatedAt,
+      });
+      return;
+    }
     const actorOwner = String(body.actorOwner || MASTER_OWNER);
     const access = getAccessProfile(current, actorOwner);
     const hasSensitiveStateChange = body.ownerCodes !== undefined || body.authConfig !== undefined || body.followupConfig !== undefined;
