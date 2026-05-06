@@ -1569,7 +1569,39 @@ export default function App() {
     const mp = !filterPIC || d.pic === filterPIC;
     return ms && mst && mds && mp;
   });
-  const kpiDeals = tab === "pipeline" || tab === "alerts" ? filtered : visibleDeals;
+  const reportFromKey = normalizeDateOnly(reportFrom);
+  const reportToKey = normalizeDateOnly(reportTo);
+  const hasReportDateFilter = Boolean(reportFromKey || reportToKey);
+  const reportSearchText = normalizeSearchText(reportSearch);
+  const reportSearchPhone = normalizePhoneText(reportSearch);
+  const reportScopedDeals = reportBaseDeals.filter((d) => {
+    const ms =
+      !reportSearchText ||
+      normalizeSearchText(d.brand).includes(reportSearchText) ||
+      normalizeSearchText(d.contact).includes(reportSearchText) ||
+      (reportSearchPhone && normalizePhoneText(d.phone).includes(reportSearchPhone));
+    const mst = !reportStage || d.stage === reportStage;
+    const mds = matchDealStatusFilter(d.deal_status, reportDealStatus);
+    const mp = !reportPIC || reportPIC === "all" || d.pic === reportPIC;
+    return ms && mst && mds && mp;
+  });
+  const reportFilteredDeals = reportScopedDeals.filter((d) => {
+    if (!hasReportDateFilter) return true;
+    const inputDateKey = getDealInputDateKey(d);
+    if (!inputDateKey) return false;
+    if (reportFromKey && inputDateKey < reportFromKey) return false;
+    if (reportToKey && inputDateKey > reportToKey) return false;
+    return true;
+  });
+  const isWonInReportRange = (deal) => {
+    const wonDateKey = normalizeDateOnly(resolveWonAt(deal));
+    if (!wonDateKey) return false;
+    if (reportFromKey && wonDateKey < reportFromKey) return false;
+    if (reportToKey && wonDateKey > reportToKey) return false;
+    return true;
+  };
+  const reportWinDeals = reportScopedDeals.filter((deal) => isWonInReportRange(deal));
+  const kpiDeals = tab === "pipeline" || tab === "alerts" ? filtered : tab === "report" ? reportFilteredDeals : visibleDeals;
 
   const overdueCount = kpiDeals.filter((d) => isDealCurrentlyOverdue(d, followupConfig)).length;
   const alertDeals = filteredNoDate
@@ -1610,15 +1642,16 @@ export default function App() {
   const stats = {
     total: kpiDeals.length,
     hot: kpiDeals.filter((d) => d.stage === "Hot").length,
-    win: kpiDeals.filter((d) => d.stage === "Win").length,
+    win: tab === "report" ? reportWinDeals.length : kpiDeals.filter((d) => d.stage === "Win").length,
     rev: kpiDeals.reduce((s, d) => s + (Number(d.value) || 0), 0),
   };
   const teamStats = TEAM_OPTIONS.map((team) => {
     const teamDeals = kpiDeals.filter((deal) => deal.team === team);
+    const teamWins = tab === "report" ? reportWinDeals.filter((deal) => deal.team === team) : teamDeals.filter((deal) => deal.stage === "Win");
     return {
       team,
       total: teamDeals.length,
-      win: teamDeals.filter((deal) => deal.stage === "Win").length,
+      win: teamWins.length,
       rev: teamDeals.reduce((sum, deal) => sum + (Number(deal.value) || 0), 0),
     };
   });
