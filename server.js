@@ -653,6 +653,12 @@ function normalizeDeal(deal) {
   const lead_source_type = normalizeLeadSourceType(deal.lead_source_type) || legacySource.lead_source_type;
   const lead_source_detail = normalizeLeadSourceDetail(deal.lead_source_detail) || legacySource.lead_source_detail;
   const source = buildLeadSource(lead_source_type, lead_source_detail) || legacySource.source;
+  const hist = Array.isArray(deal.stageHistory) ? deal.stageHistory : [];
+  const lastWin = [...hist].reverse().find((entry) => entry?.to === "Win" && entry?.date);
+  const wonAt =
+    (typeof deal.wonAt === "string" && deal.wonAt)
+    || (lastWin?.date || "")
+    || (deal.stage === "Win" ? (deal.updatedAt || deal.dataInputDate || deal.createdAt || "") : "");
   return {
     ...deal,
     id: String(deal.id || Date.now()),
@@ -675,6 +681,7 @@ function normalizeDeal(deal) {
     deal_status: DEAL_STATUS_OPTIONS.includes(deal.deal_status) ? deal.deal_status : null,
     dataInputDate: typeof deal.dataInputDate === "string" ? deal.dataInputDate : "",
     lastMeeting: typeof deal.lastMeeting === "string" ? deal.lastMeeting : "",
+    wonAt,
     notes: parseNotes(deal.notes),
     createdAt: typeof deal.createdAt === "string" ? deal.createdAt : new Date().toISOString(),
     updatedAt: typeof deal.updatedAt === "string" ? deal.updatedAt : new Date().toISOString(),

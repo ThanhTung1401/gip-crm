@@ -395,6 +395,14 @@ const parseLegacyLeadSource = (rawValue) => {
     source: text,
   };
 };
+const resolveWonAt = (deal) => {
+  if (typeof deal?.wonAt === "string" && deal.wonAt) return deal.wonAt;
+  const hist = Array.isArray(deal?.stageHistory) ? deal.stageHistory : [];
+  const lastWin = [...hist].reverse().find((entry) => entry?.to === "Win" && entry?.date);
+  if (lastWin?.date) return lastWin.date;
+  if (deal?.stage === "Win") return deal?.updatedAt || deal?.dataInputDate || deal?.createdAt || "";
+  return "";
+};
 
 const normalizeDeals = (rawDeals) =>
   Array.isArray(rawDeals)
@@ -424,6 +432,7 @@ const normalizeDeals = (rawDeals) =>
           return { stage: nextStage, deal_status: nextStatus };
         })(),
         notes: parseNotes(deal.notes),
+        wonAt: resolveWonAt(deal),
         stageHistory: Array.isArray(deal.stageHistory) ? deal.stageHistory : [],
       }))
     : [];
@@ -783,6 +792,7 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
       maKH: String(getImportValue(normalizedRow, importHeaderAliases.maKH) || "").trim(),
       bangGia: String(getImportValue(normalizedRow, importHeaderAliases.bangGia) || "").trim(),
       dataInputDate,
+      wonAt: stage === "Win" ? dataInputDate : "",
       marketRegion,
       notes: noteText ? [{ text: noteText, date: now }] : [],
       createdAt: now,
@@ -1054,7 +1064,8 @@ export default function App() {
           if (d.id !== deal.id) return d;
           const history = Array.isArray(d.stageHistory) ? [...d.stageHistory] : [];
           if (d.stage !== nextDeal.stage) history.push({ from: d.stage, to: nextDeal.stage, date: now });
-          return { ...nextDeal, stageHistory: history, updatedAt: stamp };
+          const wonAt = d.stage !== "Win" && nextDeal.stage === "Win" ? stamp : (d.wonAt || nextDeal.wonAt || "");
+          return { ...nextDeal, wonAt, stageHistory: history, updatedAt: stamp };
         })
       : (() => {
           const newDeal = {
@@ -1065,6 +1076,7 @@ export default function App() {
             updatedAt: stamp,
             dataInputDate: nextDeal.dataInputDate || now,
             notes: parseNotes(nextDeal.notes),
+            wonAt: (nextDeal.stage || "Data Thô") === "Win" ? (nextDeal.dataInputDate || stamp) : "",
             stageHistory: [{ from: null, to: nextDeal.stage || "Data Thô", date: nextDeal.dataInputDate || now }],
           };
           if (ownerMode && !newDeal.pic) newDeal.pic = ownerMode;
@@ -1230,7 +1242,8 @@ export default function App() {
         if (d.id !== id || d.stage === toStage) return d;
         const h = Array.isArray(d.stageHistory) ? [...d.stageHistory] : [];
         h.push({ from: d.stage, to: toStage, date: now });
-        return { ...d, stage: toStage, stageHistory: h, updatedAt: now };
+        const wonAt = d.stage !== "Win" && toStage === "Win" ? now : (d.wonAt || "");
+        return { ...d, stage: toStage, wonAt, stageHistory: h, updatedAt: now };
       }),
     );
   };
@@ -2048,7 +2061,7 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
   };
   const searchText = normalizeSearchText(reportSearch);
   const searchPhone = normalizePhoneText(reportSearch);
-  const rangedDeals = deals.filter((d) => {
+  const scopedDeals = deals.filter((d) => {
     const ms =
       !searchText ||
       normalizeSearchText(d.brand).includes(searchText) ||
@@ -2057,9 +2070,17 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
     const mst = !reportStage || d.stage === reportStage;
     const mds = matchDealStatusFilter(d.deal_status, reportDealStatus);
     const mp = !reportPIC || reportPIC === "all" || d.pic === reportPIC;
-    const md = isDealInputDateInRange(d);
-    return ms && mst && mds && mp && md;
+    return ms && mst && mds && mp;
   });
+  const rangedDeals = scopedDeals.filter((d) => isDealInputDateInRange(d));
+  const isWonInReportRange = (deal) => {
+    if (hasInvalidRange) return false;
+    const wonKey = normalizeDateOnly(resolveWonAt(deal));
+    if (!wonKey) return false;
+    if (reportFromKey && wonKey < reportFromKey) return false;
+    if (reportToKey && wonKey > reportToKey) return false;
+    return true;
+  };
   const movedInRange = hasInvalidRange
     ? []
     : rangedDeals.flatMap((d) =>
@@ -2076,7 +2097,7 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
             return { ...h, brand: d.brand, pic: d.pic, value: Number(d.value) || 0, id: d.id, prevDate: prev, _idx: currentIndex };
           }),
       );
-  const wonInRange = rangedDeals.filter((d) => (Array.isArray(d.stageHistory) ? d.stageHistory : []).some((x) => x.to === "Win"));
+  const wonInRange = scopedDeals.filter((d) => isWonInReportRange(d));
   const revenueWin = wonInRange.reduce((s, d) => s + (Number(d.value) || 0), 0);
   const overdueDealsInRange = rangedDeals.filter((d) => isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT));
   const realtimeOverdueByPic = deals.filter((d) => {
@@ -2124,7 +2145,7 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
   const picStats = ownerCodes
     .map((pic) => {
       const leads = rangedDeals.filter((d) => d.pic === pic);
-      const wins = leads.filter((d) => (Array.isArray(d.stageHistory) ? d.stageHistory : []).some((x) => x.to === "Win"));
+      const wins = scopedDeals.filter((d) => d.pic === pic && isWonInReportRange(d));
       return {
         pic,
         total: leads.length,
@@ -2218,22 +2239,30 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
     const d = getDealDate(deal);
     return d ? d >= weekStart : false;
   };
-  const isWinDeal = (deal) => deal.stage === "Win" || getNormalizedDealStatusForReport(deal.deal_status) === "won";
+  const winScopedDeals = scopedDeals.filter((deal) => isWonInReportRange(deal));
   const countSourceMetrics = (rows) => {
     const stageCountsMap = Object.fromEntries(reportStageColumns.map((stage) => [stage, 0]));
     rows.forEach((deal) => {
       if (stageCountsMap[deal.stage] !== undefined) stageCountsMap[deal.stage] += 1;
     });
+    const winRows = rows.filter((deal) => winScopedDeals.some((w) => w.id === deal.id));
+    stageCountsMap.Win = winRows.length;
     return {
       MTD: rows.filter(isInMTD).length,
-      W: rows.filter(isWinDeal).length,
+      W: winRows.length,
       WTD: rows.filter(isInWTD).length,
       ...stageCountsMap,
     };
   };
   const sourceTypeOrder = ["Cá nhân", "Sếp Loki", "Công ty", "Chưa phân loại"];
   const sourceDetailOrder = ["Facebook", "Zalo", "TikTok", "Website", "Fanpage", "Group", "Khách giới thiệu", "Khác", "Chưa rõ nguồn"];
-  const sourceBaseDeals = hasInvalidRange ? [] : rangedDeals;
+  const sourceBaseDeals = hasInvalidRange ? [] : (() => {
+    const merged = [...rangedDeals];
+    winScopedDeals.forEach((deal) => {
+      if (!merged.some((d) => d.id === deal.id)) merged.push(deal);
+    });
+    return merged;
+  })();
   const sourceReportRows = sourceTypeOrder.map((type) => {
     const typeDeals = sourceBaseDeals.filter((deal) => getDealSourceBucket(deal).sourceType === type);
     const groupedByName = sourceDetailOrder.map((sourceName) => {
