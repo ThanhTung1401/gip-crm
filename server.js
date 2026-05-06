@@ -985,6 +985,33 @@ async function route(req, res) {
     }
     const actorOwner = String(body.actorOwner || MASTER_OWNER);
     const access = getAccessProfile(current, actorOwner);
+    if (Array.isArray(body.deals) && access.role !== MASTER_ROLE) {
+      const unauthorizedIncoming = body.deals.find((deal) => {
+        if (!deal || typeof deal !== "object") return true;
+        const existing = current.deals.find((item) => item.id === deal.id);
+        if (access.role === MANAGER_ROLE) {
+          if (existing && existing.team !== access.team) return true;
+          if (!existing && deal.team !== access.team) return true;
+          return false;
+        }
+        if (existing && existing.pic !== access.owner) return true;
+        if (!existing && deal.pic !== access.owner) return true;
+        return false;
+      });
+      if (unauthorizedIncoming) {
+        sendJson(res, 403, { ok: false, error: "forbidden_deal_update" });
+        return;
+      }
+    }
+    console.info("[state] write_request", {
+      actorOwner,
+      role: access.role,
+      team: access.team || "",
+      dealsIncoming: Array.isArray(body.deals) ? body.deals.length : 0,
+      baseUpdatedAt: baseUpdatedAt || "",
+      currentUpdatedAt: current.updatedAt || "",
+      dataFile: DATA_FILE,
+    });
     const hasSensitiveStateChange = body.ownerCodes !== undefined || body.authConfig !== undefined || body.followupConfig !== undefined;
     if (hasSensitiveStateChange) {
       try {
@@ -1017,6 +1044,13 @@ async function route(req, res) {
       telegramConfig: mergedTelegramConfig,
       followupConfig: access.role === MASTER_ROLE && body.followupConfig ? body.followupConfig : current.followupConfig,
       alertLog: current.alertLog || {},
+    });
+    console.info("[state] write_success", {
+      actorOwner,
+      role: access.role,
+      updatedAt: next.updatedAt,
+      dealsTotal: next.deals.length,
+      dataFile: DATA_FILE,
     });
     sendJson(res, 200, { ok: true, updatedAt: next.updatedAt });
     return;

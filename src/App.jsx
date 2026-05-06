@@ -1043,33 +1043,79 @@ export default function App() {
     return { ...deal, pic: nextPic, team: nextTeam };
   };
 
-  const saveDeal = (deal) => {
+  const saveDeal = async (deal) => {
     const now = new Date().toISOString();
     const nextDeal = applyAccessDefaultsToDeal(deal);
-    if (deal.id) {
-      setDeals((p) =>
-        p.map((d) => {
+    const currentDeals = deals;
+    let targetDealId = deal.id;
+    let expectedStage = nextDeal.stage || "Data Thô";
+    const nextDeals = deal.id
+      ? currentDeals.map((d) => {
           if (d.id !== deal.id) return d;
           const history = Array.isArray(d.stageHistory) ? [...d.stageHistory] : [];
           if (d.stage !== nextDeal.stage) history.push({ from: d.stage, to: nextDeal.stage, date: now });
           return { ...nextDeal, stageHistory: history, updatedAt: now };
+        })
+      : (() => {
+          const newDeal = {
+            ...nextDeal,
+            id: Date.now().toString(),
+            stage: nextDeal.stage || "Data Thô",
+            createdAt: now,
+            updatedAt: now,
+            dataInputDate: nextDeal.dataInputDate || now,
+            notes: parseNotes(nextDeal.notes),
+            stageHistory: [{ from: null, to: nextDeal.stage || "Data Thô", date: nextDeal.dataInputDate || now }],
+          };
+          if (ownerMode && !newDeal.pic) newDeal.pic = ownerMode;
+          targetDealId = newDeal.id;
+          expectedStage = newDeal.stage;
+          return [...currentDeals, newDeal];
+        })();
+
+    setDeals(nextDeals);
+    try {
+      const result = await apiRequest("/state", {
+        method: "POST",
+        body: JSON.stringify({
+          actorOwner: currentAccount,
+          baseUpdatedAt: backendUpdatedAt || undefined,
+          ownerCodes: canManageMasterSettings ? ownerCodes : undefined,
+          deals: nextDeals,
+          authConfig: canManageMasterSettings ? authConfig : undefined,
+          telegramConfig: { [currentAccount]: telegramConfig[currentAccount] || { botToken: "", chatId: "" } },
+          followupConfig: canManageMasterSettings ? followupConfig : undefined,
         }),
-      );
-    } else {
-      const newDeal = {
-        ...nextDeal,
-        id: Date.now().toString(),
-        stage: nextDeal.stage || "Data Thô",
-        createdAt: now,
-        updatedAt: now,
-        dataInputDate: nextDeal.dataInputDate || now,
-        notes: parseNotes(nextDeal.notes),
-        stageHistory: [{ from: null, to: nextDeal.stage || "Data Thô", date: nextDeal.dataInputDate || now }],
-      };
-      if (ownerMode && !newDeal.pic) newDeal.pic = ownerMode;
-      setDeals((p) => [...p, newDeal]);
+      });
+      setBackendUpdatedAt(typeof result.updatedAt === "string" ? result.updatedAt : backendUpdatedAt);
+      const latest = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+      setDeals(normalizeDeals(latest.deals));
+      if (latest.ownerCodes) setOwnerCodes(normalizeOwnerCodes(latest.ownerCodes));
+      if (latest.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(latest.authConfig, latest.ownerCodes || ownerCodes) }));
+      if (latest.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(latest.telegramConfig, latest.ownerCodes || ownerCodes) }));
+      if (latest.followupConfig) setFollowupConfig(normalizeFollowupConfig(latest.followupConfig));
+      setBackendUpdatedAt(typeof latest.updatedAt === "string" ? latest.updatedAt : "");
+      const persisted = (latest.deals || []).find((d) => d.id === targetDealId);
+      if (!persisted || persisted.stage !== expectedStage) {
+        throw new Error("Lưu không thành công, dữ liệu chưa được cập nhật trên server.");
+      }
+      setBackendReady(true);
+      setModalDeal(null);
+      console.info("[saveDeal] persisted", { dealId: targetDealId, stage: persisted.stage, actor: currentAccount, updatedAt: latest.updatedAt });
+      return { ok: true };
+    } catch (error) {
+      setBackendReady(false);
+      try {
+        const latest = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+        setDeals(normalizeDeals(latest.deals));
+        if (latest.ownerCodes) setOwnerCodes(normalizeOwnerCodes(latest.ownerCodes));
+        if (latest.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(latest.authConfig, latest.ownerCodes || ownerCodes) }));
+        if (latest.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(latest.telegramConfig, latest.ownerCodes || ownerCodes) }));
+        if (latest.followupConfig) setFollowupConfig(normalizeFollowupConfig(latest.followupConfig));
+        setBackendUpdatedAt(typeof latest.updatedAt === "string" ? latest.updatedAt : "");
+      } catch {}
+      return { ok: false, error: error?.message || "save_failed" };
     }
-    setModalDeal(null);
   };
 
   const openAddOptions = (preset = {}) => {
@@ -2686,6 +2732,7 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
   const [f, setF] = useState({ brand: "", contact: "", phone: "", ado: "", team: currentRole === DEFAULT_MASTER_ROLE ? "" : currentTeam, platform: [], stage: "Data Thô", pic: ownerMode || "", lead_source_type: sourceLegacy.lead_source_type, lead_source_detail: sourceLegacy.lead_source_detail, source: sourceLegacy.source, lead_source: sourceLegacy.source, value: "", maKH: "", bangGia: "", marketRegion: "", ...deal, deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "", notes: parseNotes(deal.notes) });
   const [dateInput, setDateInput] = useState(initDate);
   const [newNote, setNewNote] = useState("");
+  const [saving, setSaving] = useState(false);
   const s = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const syncPicForMaster = (pic) => {
     const nextTeam = getAuthEntry(authConfig, pic, ownerCodes.filter((code) => code !== MASTER_OWNER)).team || "";
@@ -2699,14 +2746,20 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
   };
   const isWin = f.stage === "Win";
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    if (saving) return;
     if (!f.brand.trim()) return window.alert("Vui lòng nhập tên Brand!");
     const isoDate = toISODate(dateInput) || new Date().toISOString();
     const lead_source_type = normalizeLeadSourceType(f.lead_source_type);
     const lead_source_detail = normalizeLeadSourceDetail(f.lead_source_detail);
     const marketRegion = normalizeMarketRegion(f.marketRegion);
     const source = buildLeadSource(lead_source_type, lead_source_detail) || String(f.source || "").trim();
-    onSave({ ...f, lead_source_type, lead_source_detail, marketRegion, lead_source: source, source, dataInputDate: isoDate, lastMeeting: "" });
+    setSaving(true);
+    const result = await onSave({ ...f, lead_source_type, lead_source_detail, marketRegion, lead_source: source, source, dataInputDate: isoDate, lastMeeting: "" });
+    setSaving(false);
+    if (!result?.ok) {
+      window.alert(result?.error || "Lưu không thành công, vui lòng thử lại.");
+    }
   };
 
   return (
@@ -2845,7 +2898,7 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
         {!isNew && f.createdAt && <div style={{ fontSize: "11px", color: "#a0b8d0", marginTop: "12px" }}>📅 Tạo: {fmtDate(f.createdAt)} · Cập nhật: {fmtDate(f.updatedAt)}</div>}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "16px" }}>
           <Btn onClick={onClose}>Huỷ</Btn>
-          <Btn blue onClick={handleSave}>{isNew ? "Tạo Deal" : "Lưu thay đổi"}</Btn>
+          <Btn blue onClick={handleSave} disabled={saving}>{saving ? "Đang lưu..." : (isNew ? "Tạo Deal" : "Lưu thay đổi")}</Btn>
         </div>
       </div>
     </Modal>
