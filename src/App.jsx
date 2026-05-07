@@ -1467,6 +1467,14 @@ export default function App() {
     setFilterToDate("");
     setActiveDatePreset("");
   };
+  const resetReportFilters = () => {
+    setReportSearch("");
+    setReportStage("");
+    setReportDealStatus("");
+    setReportPIC(effectiveRole === DEFAULT_USER_ROLE ? currentAccount : "all");
+    setReportFrom("");
+    setReportTo("");
+  };
   const getTodayDateKey = () => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
@@ -1814,6 +1822,7 @@ export default function App() {
                     </div>
                   </div>
                   <div className="pipeline-toolbar-actions">
+                    <Btn onClick={resetPipelineFilters}>↺ Xóa bộ lọc</Btn>
                     <Btn blue onClick={() => openAddOptions({ pic: ownerMode || "" })}>+ Deal mới</Btn>
                     {canOpenSettings && <Btn onClick={() => setShowSetup(true)}>⚙ Cài đặt</Btn>}
                   </div>
@@ -1854,6 +1863,7 @@ export default function App() {
                     </div>
                   </div>
                   <div className="pipeline-toolbar-actions">
+                    <Btn onClick={resetReportFilters}>↺ Xóa bộ lọc</Btn>
                     <Btn blue onClick={() => exportExcel(deals, `${reportFrom || "start"}_${reportTo || "end"}`)}>⬇ Xuất Excel</Btn>
                     {canOpenSettings && <Btn onClick={() => setShowSetup(true)}>⚙ Cài đặt</Btn>}
                   </div>
