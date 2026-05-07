@@ -896,6 +896,7 @@ export default function App() {
   const [dragOver, setDragOver] = useState(null);
   const [draggingId, setDraggingId] = useState(null);
   const [syncState, setSyncState] = useState("idle");
+  const [deletingDealIds, setDeletingDealIds] = useState({});
   const [search, setSearch] = useState("");
   const [filterPIC, setFilterPIC] = useState("");
   const [filterStage, setFilterStage] = useState("");
@@ -1278,8 +1279,122 @@ export default function App() {
     }
   };
 
-  const deleteDeal = (id) => {
-    if (window.confirm("Xóa deal này?")) setDeals((p) => p.filter((d) => d.id !== id));
+  const deleteDeal = async (id) => {
+    if (!window.confirm("Xóa deal này?")) return;
+    if (!id) return;
+    if (deletingDealIds[id]) return;
+
+    const previousDeals = deals;
+    const nextDeals = previousDeals.filter((d) => d.id !== id);
+    if (nextDeals.length === previousDeals.length) return;
+
+    setDeletingDealIds((prev) => ({ ...prev, [id]: true }));
+    console.info("[delete] optimistic_removed", { dealId: id, actor: currentAccount });
+    setDeals(nextDeals);
+
+    try {
+      const result = await apiRequest("/state", {
+        method: "POST",
+        body: JSON.stringify({
+          actorOwner: currentAccount,
+          baseUpdatedAt: backendUpdatedAt || undefined,
+          ownerCodes: canManageMasterSettings ? ownerCodes : undefined,
+          deals: nextDeals,
+          authConfig: canManageMasterSettings ? authConfig : undefined,
+          telegramConfig: { [currentAccount]: telegramConfig[currentAccount] || { botToken: "", chatId: "" } },
+          followupConfig: canManageMasterSettings ? followupConfig : undefined,
+        }),
+      });
+      setBackendUpdatedAt(typeof result.updatedAt === "string" ? result.updatedAt : backendUpdatedAt);
+      const latest = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+      const latestDeals = normalizeDeals(latest.deals || []);
+      const stillExists = latestDeals.some((deal) => deal.id === id);
+      if (stillExists) {
+        throw new Error("Xóa không thành công, dữ liệu chưa được cập nhật trên server.");
+      }
+      setDeals(latestDeals);
+      if (latest.ownerCodes) setOwnerCodes(normalizeOwnerCodes(latest.ownerCodes));
+      if (latest.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(latest.authConfig, latest.ownerCodes || ownerCodes) }));
+      if (latest.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(latest.telegramConfig, latest.ownerCodes || ownerCodes) }));
+      if (latest.followupConfig) setFollowupConfig(normalizeFollowupConfig(latest.followupConfig));
+      setBackendUpdatedAt(typeof latest.updatedAt === "string" ? latest.updatedAt : "");
+      setBackendReady(true);
+      console.info("[delete] db_success", { dealId: id, actor: currentAccount, updatedAt: latest.updatedAt });
+    } catch (error) {
+      if (error?.status === 409) {
+        try {
+          const latest = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+          const latestDeals = normalizeDeals(latest.deals || []);
+          const retryDeals = latestDeals.filter((deal) => deal.id !== id);
+          const retryWrite = await apiRequest("/state", {
+            method: "POST",
+            body: JSON.stringify({
+              actorOwner: currentAccount,
+              baseUpdatedAt: latest.updatedAt || undefined,
+              ownerCodes: canManageMasterSettings ? ownerCodes : undefined,
+              deals: retryDeals,
+              authConfig: canManageMasterSettings ? authConfig : undefined,
+              telegramConfig: { [currentAccount]: telegramConfig[currentAccount] || { botToken: "", chatId: "" } },
+              followupConfig: canManageMasterSettings ? followupConfig : undefined,
+            }),
+          });
+          setBackendUpdatedAt(typeof retryWrite.updatedAt === "string" ? retryWrite.updatedAt : "");
+          const verify = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+          const verifyDeals = normalizeDeals(verify.deals || []);
+          if (verifyDeals.some((deal) => deal.id === id)) {
+            throw new Error("Xóa không thành công do xung đột dữ liệu. Vui lòng thử lại.");
+          }
+          setDeals(verifyDeals);
+          if (verify.ownerCodes) setOwnerCodes(normalizeOwnerCodes(verify.ownerCodes));
+          if (verify.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(verify.authConfig, verify.ownerCodes || ownerCodes) }));
+          if (verify.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(verify.telegramConfig, verify.ownerCodes || ownerCodes) }));
+          if (verify.followupConfig) setFollowupConfig(normalizeFollowupConfig(verify.followupConfig));
+          setBackendUpdatedAt(typeof verify.updatedAt === "string" ? verify.updatedAt : "");
+          setBackendReady(true);
+          console.info("[delete] conflict_retry_success", { dealId: id, actor: currentAccount, updatedAt: verify.updatedAt });
+        } catch (retryError) {
+          setBackendReady(false);
+          try {
+            const rollback = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+            setDeals(normalizeDeals(rollback.deals || []));
+            if (rollback.ownerCodes) setOwnerCodes(normalizeOwnerCodes(rollback.ownerCodes));
+            if (rollback.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(rollback.authConfig, rollback.ownerCodes || ownerCodes) }));
+            if (rollback.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(rollback.telegramConfig, rollback.ownerCodes || ownerCodes) }));
+            if (rollback.followupConfig) setFollowupConfig(normalizeFollowupConfig(rollback.followupConfig));
+            setBackendUpdatedAt(typeof rollback.updatedAt === "string" ? rollback.updatedAt : "");
+          } catch {}
+          window.alert(retryError?.message || "Xóa thất bại do xung đột dữ liệu.");
+        } finally {
+          setDeletingDealIds((prev) => {
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          });
+        }
+        return;
+      }
+
+      console.error("[delete] db_fail", { dealId: id, actor: currentAccount, error: error?.message || "delete_failed" });
+      setBackendReady(false);
+      try {
+        const rollback = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+        setDeals(normalizeDeals(rollback.deals || []));
+        if (rollback.ownerCodes) setOwnerCodes(normalizeOwnerCodes(rollback.ownerCodes));
+        if (rollback.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(rollback.authConfig, rollback.ownerCodes || ownerCodes) }));
+        if (rollback.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(rollback.telegramConfig, rollback.ownerCodes || ownerCodes) }));
+        if (rollback.followupConfig) setFollowupConfig(normalizeFollowupConfig(rollback.followupConfig));
+        setBackendUpdatedAt(typeof rollback.updatedAt === "string" ? rollback.updatedAt : "");
+      } catch {
+        setDeals(previousDeals);
+      }
+      window.alert(error?.message || "Xóa thất bại.");
+    } finally {
+      setDeletingDealIds((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    }
   };
 
   const moveDeal = (id, toStage) => {
@@ -1949,7 +2064,7 @@ export default function App() {
               </div>
             )}
 
-            {tab === "pipeline" && <KanbanBoard deals={filtered} dragOver={dragOver} setDragOver={setDragOver} draggingId={draggingId} setDraggingId={setDraggingId} moveDeal={moveDeal} onEdit={(d) => setModalDeal(d)} onDelete={deleteDeal} onAdd={(stage) => openAddOptions({ stage, pic: ownerMode || "" })} />}
+            {tab === "pipeline" && <KanbanBoard deals={filtered} dragOver={dragOver} setDragOver={setDragOver} draggingId={draggingId} setDraggingId={setDraggingId} moveDeal={moveDeal} onEdit={(d) => setModalDeal(d)} onDelete={deleteDeal} deletingDealIds={deletingDealIds} onAdd={(stage) => openAddOptions({ stage, pic: ownerMode || "" })} />}
             {tab === "alerts" && <AlertView alertDeals={alertDeals} onEdit={(deal) => setModalDeal(deal)} />}
             {tab === "report" && <ReportView deals={isMaster ? deals : visibleDeals} ownerCodes={allOwnerCodes} reportFrom={reportFrom} reportTo={reportTo} reportPIC={ownerMode || reportPIC} setReportPIC={setReportPIC} reportSearch={reportSearch} reportStage={reportStage} reportDealStatus={reportDealStatus} isMaster={isMaster} followupConfig={followupConfig} />}
           </div>
@@ -1964,7 +2079,7 @@ export default function App() {
   );
 }
 
-function KanbanBoard({ deals, dragOver, setDragOver, draggingId, setDraggingId, moveDeal, onEdit, onDelete, onAdd }) {
+function KanbanBoard({ deals, dragOver, setDragOver, draggingId, setDraggingId, moveDeal, onEdit, onDelete, deletingDealIds, onAdd }) {
   return (
     <div style={{ width: "100%", overflowX: "auto", padding: 0 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(156px, 1fr))", gap: "10px", width: "100%", minWidth: "960px", alignItems: "flex-start" }}>
@@ -2000,7 +2115,7 @@ function KanbanBoard({ deals, dragOver, setDragOver, draggingId, setDraggingId, 
               </div>
             </div>
             {sd.map((deal) => (
-              <DealCard key={deal.id} deal={deal} cfg={cfg} isDragging={draggingId === deal.id} onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; setDraggingId(deal.id); }} onDragEnd={() => setDraggingId(null)} onEdit={() => onEdit(deal)} onDelete={() => onDelete(deal.id)} />
+              <DealCard key={deal.id} deal={deal} cfg={cfg} isDragging={draggingId === deal.id} isDeleting={!!deletingDealIds?.[deal.id]} onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; setDraggingId(deal.id); }} onDragEnd={() => setDraggingId(null)} onEdit={() => onEdit(deal)} onDelete={() => onDelete(deal.id)} />
             ))}
             {sd.length === 0 && <div style={{ padding: "20px 0", textAlign: "center", color: isOver ? cfg.color : "#c0cfd8", fontSize: "11px" }}>{isOver ? "↓ Thả vào đây" : "Chưa có deal"}</div>}
             <button
@@ -2019,7 +2134,7 @@ function KanbanBoard({ deals, dragOver, setDragOver, draggingId, setDraggingId, 
   );
 }
 
-function DealCard({ deal, cfg, isDragging, onDragStart, onDragEnd, onEdit, onDelete }) {
+function DealCard({ deal, cfg, isDragging, isDeleting = false, onDragStart, onDragEnd, onEdit, onDelete }) {
   const [hover, setHover] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -2045,7 +2160,7 @@ function DealCard({ deal, cfg, isDragging, onDragStart, onDragEnd, onEdit, onDel
         {hover && (
           <div style={{ display: "flex", gap: "3px", flexShrink: 0 }}>
             <MiniBtn onClick={onEdit} title="Sửa">✎</MiniBtn>
-            <MiniBtn onClick={onDelete} title="Xóa" danger>✕</MiniBtn>
+            <MiniBtn onClick={onDelete} title="Xóa" danger disabled={isDeleting}>{isDeleting ? "…" : "✕"}</MiniBtn>
           </div>
         )}
       </div>
@@ -2804,8 +2919,8 @@ function Modal({ children, onClose }) {
   return <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.28)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: "12px", backdropFilter: "blur(6px)" }}><div style={{ background: "#fff", border: `1px solid ${UI.border}`, borderRadius: "20px", padding: "24px", maxHeight: "92vh", overflowY: "auto", boxShadow: "0 24px 60px rgba(15,23,42,0.16)" }}>{children}</div></div>;
 }
 
-function MiniBtn({ onClick, children, danger, title }) {
-  return <button onClick={(e) => { e.stopPropagation(); onClick(); }} title={title} style={{ background: "transparent", border: "none", borderRadius: "4px", width: "20px", height: "20px", color: danger ? "#c0392b" : "#90a8c0", cursor: "pointer", fontSize: "12px", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit" }}>{children}</button>;
+function MiniBtn({ onClick, children, danger, title, disabled = false }) {
+  return <button disabled={disabled} onClick={(e) => { e.stopPropagation(); if (!disabled) onClick(); }} title={title} style={{ background: "transparent", border: "none", borderRadius: "4px", width: "20px", height: "20px", color: disabled ? "#c0cfd8" : danger ? "#c0392b" : "#90a8c0", cursor: disabled ? "not-allowed" : "pointer", fontSize: "12px", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit" }}>{children}</button>;
 }
 
 function FormBlock({ title, children, highlight = false }) {

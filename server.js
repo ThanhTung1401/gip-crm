@@ -457,7 +457,14 @@ async function syncFromOnline() {
   validateBackupPayload(payload);
   validateDealsPayload(payload.data.deals);
 
-  const restored = saveState(payload.data);
+  const mergedPayloadData = {
+    ...payload.data,
+    deletedDealTombstones: {
+      ...(payload?.data?.deletedDealTombstones && typeof payload.data.deletedDealTombstones === "object" ? payload.data.deletedDealTombstones : {}),
+      ...(current?.deletedDealTombstones && typeof current.deletedDealTombstones === "object" ? current.deletedDealTombstones : {}),
+    },
+  };
+  const restored = saveState(mergedPayloadData);
   console.log(
     `[crm] sync_from_online_success at=${new Date().toISOString()} records=${restored.deals.length} sourceBackup=${sourceBackupFile?.fileName || "live-backup"}`,
   );
@@ -584,6 +591,7 @@ function makeDefaultState() {
   return {
     ownerCodes,
     deals: [],
+    deletedDealTombstones: {},
     authConfig: Object.fromEntries(buildAllOwnerCodes(ownerCodes).map((pic) => [pic, normalizeAuthEntry(null, pic, ownerCodes)])),
     telegramConfig: Object.fromEntries(buildAllOwnerCodes(ownerCodes).map((pic) => [pic, { botToken: "", chatId: "" }])),
     followupConfig: { ...FOLLOWUP_HOURS_DEFAULT },
@@ -620,6 +628,15 @@ function normalizeState(raw, options = {}) {
   const base = makeDefaultState();
   const ownerCodes = deriveOwnerCodes(raw);
   let deals = Array.isArray(raw?.deals) ? raw.deals.map(normalizeDeal).filter(Boolean) : [];
+  const rawTombstones = raw?.deletedDealTombstones && typeof raw.deletedDealTombstones === "object" ? raw.deletedDealTombstones : {};
+  const deletedDealTombstones = {};
+  Object.entries(rawTombstones).forEach(([dealId, meta]) => {
+    if (!dealId) return;
+    deletedDealTombstones[String(dealId)] = {
+      deletedAt: typeof meta?.deletedAt === "string" && meta.deletedAt ? meta.deletedAt : new Date().toISOString(),
+      deletedBy: typeof meta?.deletedBy === "string" ? meta.deletedBy : "",
+    };
+  });
   let authPatched = 0;
   let teamPatched = 0;
   let stagePatched = 0;
@@ -662,6 +679,14 @@ function normalizeState(raw, options = {}) {
     if (nextStage !== deal.stage || nextStatus !== deal.deal_status) stagePatched += 1;
     return { ...deal, team: nextTeam, stage: nextStage, deal_status: nextStatus };
   });
+  if (Object.keys(deletedDealTombstones).length) {
+    const beforeCount = deals.length;
+    deals = deals.filter((deal) => !deletedDealTombstones[String(deal.id)]);
+    const removedByTombstone = beforeCount - deals.length;
+    if (removedByTombstone > 0 && options.logSource) {
+      console.info(`[state] Tombstone applied on ${options.logSource}: removedDeals=${removedByTombstone}`);
+    }
+  }
   if (options.logSource === "disk" && (authPatched > 0 || teamPatched > 0 || stagePatched > 0)) {
     console.info(`[state] Migration applied on load: authPatched=${authPatched}, dealTeamPatched=${teamPatched}, dealStagePatched=${stagePatched}`);
   }
@@ -669,6 +694,7 @@ function normalizeState(raw, options = {}) {
   return {
     ownerCodes,
     deals,
+    deletedDealTombstones,
     authConfig,
     telegramConfig,
     followupConfig,
@@ -676,6 +702,24 @@ function normalizeState(raw, options = {}) {
     sentAlerts,
     updatedAt: typeof raw?.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
   };
+}
+
+function buildDeleteTombstones(current, incoming, access, actorOwner) {
+  const currentVisible = filterDealsByAccess(current.deals || [], access);
+  const incomingVisible = filterDealsByAccess(incoming || [], access);
+  const incomingIds = new Set(incomingVisible.map((deal) => String(deal?.id || "")));
+  const nowIso = new Date().toISOString();
+  const next = { ...(current.deletedDealTombstones || {}) };
+  const deletedIds = [];
+  currentVisible.forEach((deal) => {
+    const id = String(deal?.id || "");
+    if (!id || incomingIds.has(id)) return;
+    if (!next[id]) {
+      next[id] = { deletedAt: nowIso, deletedBy: actorOwner || "" };
+    }
+    deletedIds.push(id);
+  });
+  return { tombstones: next, deletedIds };
 }
 
 function normalizeDeal(deal) {
@@ -1599,6 +1643,17 @@ async function route(req, res) {
       currentUpdatedAt: current.updatedAt || "",
       dataFile: DATA_FILE,
     });
+    const { tombstones: nextTombstones, deletedIds } = Array.isArray(body.deals)
+      ? buildDeleteTombstones(current, body.deals, access, actorOwner)
+      : { tombstones: current.deletedDealTombstones || {}, deletedIds: [] };
+    if (deletedIds.length > 0) {
+      console.info("[delete] request", {
+        actorOwner,
+        role: access.role,
+        deletedCount: deletedIds.length,
+        deletedIds: deletedIds.slice(0, 20),
+      });
+    }
     const hasSensitiveStateChange = body.ownerCodes !== undefined || body.authConfig !== undefined || body.followupConfig !== undefined;
     if (hasSensitiveStateChange) {
       try {
@@ -1623,16 +1678,25 @@ async function route(req, res) {
           ),
         }
       : current.telegramConfig;
+    const mergedDeals = Array.isArray(body.deals) ? mergeDealsByAccess(current.deals, body.deals, access) : current.deals;
+    const activeDeals = mergedDeals.filter((deal) => !nextTombstones[String(deal?.id || "")]);
     const next = saveState({
       ...current,
       ownerCodes: nextOwnerCodes,
-      deals: Array.isArray(body.deals) ? mergeDealsByAccess(current.deals, body.deals, access) : current.deals,
+      deals: activeDeals,
+      deletedDealTombstones: nextTombstones,
       authConfig: mergedAuthConfig,
       telegramConfig: mergedTelegramConfig,
       followupConfig: access.role === MASTER_ROLE && body.followupConfig ? body.followupConfig : current.followupConfig,
       alertLog: current.alertLog || {},
       sentAlerts: current.sentAlerts || {},
     });
+    if (deletedIds.length > 0) {
+      console.info("[delete] db_success", {
+        actorOwner,
+        deletedCount: deletedIds.length,
+      });
+    }
     console.info("[state] write_success", {
       actorOwner,
       role: access.role,
@@ -1640,7 +1704,7 @@ async function route(req, res) {
       dealsTotal: next.deals.length,
       dataFile: DATA_FILE,
     });
-    sendJson(res, 200, { ok: true, updatedAt: next.updatedAt });
+    sendJson(res, 200, { ok: true, updatedAt: next.updatedAt, deletedIds });
     return;
   }
 
