@@ -71,6 +71,20 @@ const GOOGLE_DRIVE_FOLDER_ID = (process.env.GOOGLE_DRIVE_FOLDER_ID || "").trim()
 const GOOGLE_SERVICE_ACCOUNT_KEY = (process.env.GOOGLE_SERVICE_ACCOUNT_KEY || "").trim();
 const GOOGLE_SERVICE_ACCOUNT_JSON = (process.env.GOOGLE_SERVICE_ACCOUNT_JSON || "").trim();
 const GOOGLE_DRIVE_FOLDER_NAME = "CRM Backups";
+const BACKUP_WARN_AFTER_FAILS = Math.max(1, Number(process.env.BACKUP_WARN_AFTER_FAILS || 2));
+const BACKUP_STALE_MINUTES = Math.max(5, Number(process.env.BACKUP_STALE_MINUTES || 90));
+const backupRuntime = {
+  startedAt: new Date().toISOString(),
+  lastBackupAt: null,
+  lastBackupFile: null,
+  lastBackupReason: null,
+  lastBackupError: null,
+  consecutiveBackupFailures: 0,
+  lastDriveUploadAt: null,
+  lastDriveUploadFile: null,
+  lastDriveUploadError: null,
+  consecutiveDriveUploadFailures: 0,
+};
 let driveClientPromise = null;
 let resolvedDriveFolderId = GOOGLE_DRIVE_FOLDER_ID;
 const STATIC_MIME = {
@@ -195,6 +209,72 @@ function cleanupOldBackups() {
   };
 }
 
+function markBackupSuccess(reason, backupFile) {
+  backupRuntime.lastBackupAt = new Date().toISOString();
+  backupRuntime.lastBackupFile = backupFile?.fileName || null;
+  backupRuntime.lastBackupReason = reason || null;
+  backupRuntime.lastBackupError = null;
+  backupRuntime.consecutiveBackupFailures = 0;
+}
+
+function markBackupFailure(reason, error) {
+  backupRuntime.lastBackupReason = reason || null;
+  backupRuntime.lastBackupError = String(error?.message || error || "backup_failed");
+  backupRuntime.consecutiveBackupFailures += 1;
+  console.error("[backup] failed", {
+    reason,
+    consecutiveBackupFailures: backupRuntime.consecutiveBackupFailures,
+    error: backupRuntime.lastBackupError,
+  });
+  if (backupRuntime.consecutiveBackupFailures >= BACKUP_WARN_AFTER_FAILS) {
+    console.error("[backup] warning_threshold_reached", {
+      consecutiveBackupFailures: backupRuntime.consecutiveBackupFailures,
+      threshold: BACKUP_WARN_AFTER_FAILS,
+    });
+  }
+}
+
+function markDriveUploadSuccess(fileName) {
+  backupRuntime.lastDriveUploadAt = new Date().toISOString();
+  backupRuntime.lastDriveUploadFile = fileName || null;
+  backupRuntime.lastDriveUploadError = null;
+  backupRuntime.consecutiveDriveUploadFailures = 0;
+}
+
+function markDriveUploadFailure(fileName, error) {
+  backupRuntime.lastDriveUploadFile = fileName || null;
+  backupRuntime.lastDriveUploadError = String(error?.message || error || "drive_upload_failed");
+  backupRuntime.consecutiveDriveUploadFailures += 1;
+  console.error("[backup] drive_upload_failed", {
+    fileName,
+    consecutiveDriveUploadFailures: backupRuntime.consecutiveDriveUploadFailures,
+    error: backupRuntime.lastDriveUploadError,
+  });
+}
+
+function getBackupHealthSnapshot() {
+  const latest = getLatestBackupFile();
+  const nowMs = Date.now();
+  const lastBackupMs = backupRuntime.lastBackupAt ? new Date(backupRuntime.lastBackupAt).getTime() : 0;
+  const staleThresholdMs = BACKUP_STALE_MINUTES * 60_000;
+  const stale = !lastBackupMs || nowMs - lastBackupMs > staleThresholdMs;
+  const status = backupRuntime.consecutiveBackupFailures > 0 || stale ? "degraded" : "healthy";
+  return {
+    status,
+    stale,
+    staleThresholdMinutes: BACKUP_STALE_MINUTES,
+    config: {
+      enableLocalBackup: ENABLE_LOCAL_BACKUP,
+      enableDriveUpload: ENABLE_DRIVE_UPLOAD,
+      autoBackupIntervalMs: AUTO_BACKUP_INTERVAL_MS,
+      maxBackupFiles: MAX_BACKUP_FILES,
+      warnAfterFails: BACKUP_WARN_AFTER_FAILS,
+    },
+    runtime: { ...backupRuntime },
+    latestBackupFile: latest ? { fileName: latest.fileName, updatedAt: latest.updatedAt, size: latest.size } : null,
+  };
+}
+
 async function fetchJson(url) {
   const response = await fetch(url, { headers: { Accept: "application/json" } });
   const json = await response.json().catch(() => ({}));
@@ -218,32 +298,40 @@ function extractBackupPayload(response) {
 }
 
 function createAutomaticBackup(reason = "scheduled") {
-  if (!ENABLE_LOCAL_BACKUP) {
+  try {
+    if (!ENABLE_LOCAL_BACKUP) {
+      const state = loadState();
+      return {
+        ...buildBackupPayload(state, { reason, skipped: "local_backup_disabled" }),
+        backupFile: null,
+        retention: { kept: 0, removed: [] },
+      };
+    }
     const state = loadState();
+    const payload = buildBackupPayload(state, { reason });
+    const backupFile = writeBackupFile(payload, "backup");
+    const retention = cleanupOldBackups();
+    if (GOOGLE_DRIVE_SYNC_DIR) {
+      mirrorBackupToGoogleDriveSync(backupFile.filePath, backupFile.fileName);
+    }
+    if (ENABLE_DRIVE_UPLOAD) {
+      uploadFileToDrive(backupFile.filePath, backupFile.fileName)
+        .catch((error) => {
+          markDriveUploadFailure(backupFile.fileName, error);
+          console.error("Google Drive upload failed:", error.message || error);
+        });
+    }
+    markBackupSuccess(reason, backupFile);
+    console.log(`[crm] backup_created reason=${reason} file=${backupFile.fileName} kept=${retention.kept} removed=${retention.removed.length}`);
     return {
-      ...buildBackupPayload(state, { reason, skipped: "local_backup_disabled" }),
-      backupFile: null,
-      retention: { kept: 0, removed: [] },
+      ...payload,
+      backupFile,
+      retention,
     };
+  } catch (error) {
+    markBackupFailure(reason, error);
+    throw error;
   }
-  const state = loadState();
-  const payload = buildBackupPayload(state, { reason });
-  const backupFile = writeBackupFile(payload, "backup");
-  const retention = cleanupOldBackups();
-  if (GOOGLE_DRIVE_SYNC_DIR) {
-    mirrorBackupToGoogleDriveSync(backupFile.filePath, backupFile.fileName);
-  }
-  if (ENABLE_DRIVE_UPLOAD) {
-    uploadFileToDrive(backupFile.filePath, backupFile.fileName).catch((error) => {
-      console.error("Google Drive upload failed:", error.message || error);
-    });
-  }
-  console.log(`[crm] backup_created reason=${reason} file=${backupFile.fileName} kept=${retention.kept} removed=${retention.removed.length}`);
-  return {
-    ...payload,
-    backupFile,
-    retention,
-  };
 }
 
 function validateBackupPayload(payload) {
@@ -451,6 +539,7 @@ async function uploadFileToDrive(filePath, fileName) {
     supportsAllDrives: true,
   });
 
+  markDriveUploadSuccess(fileName);
   console.log(`Backup uploaded to Google Drive: ${fileName}`);
   return created.data;
 }
@@ -1567,7 +1656,13 @@ async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   if (req.method === "GET" && url.pathname === "/api/health") {
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, backup: getBackupHealthSnapshot() });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/backup-health") {
+    const health = getBackupHealthSnapshot();
+    sendJson(res, health.status === "healthy" ? 200 : 503, { ok: health.status === "healthy", backup: health });
     return;
   }
 
@@ -1760,6 +1855,7 @@ async function route(req, res) {
     }
     if (ENABLE_DRIVE_UPLOAD) {
       uploadFileToDrive(preRestoreFile.filePath, preRestoreFile.fileName).catch((error) => {
+        markDriveUploadFailure(preRestoreFile.fileName, error);
         console.error("Google Drive upload failed:", error.message || error);
       });
     }

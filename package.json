@@ -8,6 +8,7 @@
     "build": "vite build",
     "start": "node server.js",
     "server": "node server.js",
+    "backup:verify": "node scripts/verify-backup.mjs",
     "preview": "vite preview",
     "serve": "python -m http.server 4173 --directory dist"
   },
