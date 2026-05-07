@@ -2236,20 +2236,24 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
     avgDays[`${from}→${st}`] = transitions.length ? Math.round(transitions.reduce((a, b) => a + b, 0) / transitions.length) : null;
   });
 
+  const pipelineColumns = [...STAGES];
   const picStats = ownerCodes
     .map((pic) => {
       const leads = rangedDeals.filter((d) => d.pic === pic);
       const wins = scopedDeals.filter((d) => d.pic === pic && isWonInReportRange(d));
+      const stageCounts = Object.fromEntries(pipelineColumns.map((stage) => [stage, 0]));
+      leads.forEach((deal) => {
+        if (stageCounts[deal.stage] !== undefined) stageCounts[deal.stage] += 1;
+      });
+      stageCounts.Win = wins.length;
       return {
         pic,
         total: leads.length,
-        hot: leads.filter((d) => d.stage === "Hot").length,
-        win: wins.length,
-        rev: wins.reduce((s, d) => s + (Number(d.value) || 0), 0),
+        stageCounts,
         overdue: leads.filter((d) => isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT)).length,
       };
     })
-    .filter((p) => p.total > 0 || p.win > 0 || p.overdue > 0);
+    .filter((p) => p.total > 0 || p.stageCounts.Win > 0 || p.overdue > 0);
 
   const stageCounts = Object.fromEntries(STAGES.map((stage) => [stage, rangedDeals.filter((d) => d.stage === stage).length]));
   const maxStageCount = Math.max(...Object.values(stageCounts), 1);
@@ -2442,15 +2446,28 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
             <div style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "13px", marginBottom: "14px" }}>👤 Hiệu suất PIC — {rangeLabel}</div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
-                <thead><tr style={{ borderBottom: "2px solid #dde6f0" }}>{["PIC", "Tổng leads", "Hot", "Win", "Revenue", "⚠️ Đang quá hạn"].map((h) => <th key={h} style={{ padding: "8px 12px", textAlign: "left", color: "#6080a0", fontWeight: "600", whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
+                <thead>
+                  <tr style={{ borderBottom: "2px solid #dde6f0" }}>
+                    <th style={{ padding: "8px 12px", textAlign: "left", color: "#6080a0", fontWeight: "600", whiteSpace: "nowrap" }}>PIC</th>
+                    <th style={{ padding: "8px 10px", textAlign: "center", color: "#6080a0", fontWeight: "600", whiteSpace: "nowrap" }}>Tổng lead</th>
+                    {pipelineColumns.map((stage) => (
+                      <th key={stage} style={{ padding: "8px 10px", textAlign: "center", color: STAGE_CFG[stage]?.color || "#6080a0", fontWeight: "700", whiteSpace: "nowrap" }}>
+                        {STAGE_CFG[stage]?.icon || "•"} {stage}
+                      </th>
+                    ))}
+                    <th style={{ padding: "8px 10px", textAlign: "center", color: "#c0392b", fontWeight: "700", whiteSpace: "nowrap" }}>⚠️ Đang quá hạn</th>
+                  </tr>
+                </thead>
                 <tbody>{picStats.map((p, i) => (
                   <tr key={p.pic} style={{ borderBottom: "1px solid #f0f4f8", background: i % 2 === 0 ? "#fafcff" : "#fff" }}>
                     <td style={{ padding: "8px 12px", fontWeight: "700", color: "#1a6fba" }}>{p.pic}</td>
-                    <td style={{ padding: "8px 12px" }}>{metricNode(p.total)}</td>
-                    <td style={{ padding: "8px 12px", color: "#c0392b", fontWeight: "600" }}>{metricNode(p.hot)}</td>
-                    <td style={{ padding: "8px 12px", color: "#1a7a45", fontWeight: "600" }}>{metricNode(p.win)}</td>
-                    <td style={{ padding: "8px 12px", color: "#b86e00", fontWeight: "600" }}>{metricText(p.rev, (n) => `${(n / 1e6).toFixed(0)}M₫`)}</td>
-                    <td style={{ padding: "8px 12px", color: p.overdue > 0 ? "#c0392b" : "#90a8c0", fontWeight: p.overdue > 0 ? "700" : "400" }}>{p.overdue > 0 ? `⚠️ ${p.overdue}` : dashNode}</td>
+                    <td style={{ padding: "8px 10px", textAlign: "center" }}>{metricNode(p.total)}</td>
+                    {pipelineColumns.map((stage) => (
+                      <td key={`${p.pic}-${stage}`} style={{ padding: "8px 10px", textAlign: "center", color: STAGE_CFG[stage]?.color || "#475569", fontWeight: stage === "Win" ? "700" : "600" }}>
+                        {metricNode(p.stageCounts[stage])}
+                      </td>
+                    ))}
+                    <td style={{ padding: "8px 10px", textAlign: "center", color: p.overdue > 0 ? "#c0392b" : "#90a8c0", fontWeight: p.overdue > 0 ? "700" : "400" }}>{p.overdue > 0 ? `⚠️ ${p.overdue}` : dashNode}</td>
                   </tr>
                 ))}</tbody>
               </table>
