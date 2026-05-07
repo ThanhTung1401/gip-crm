@@ -343,6 +343,53 @@ const filterDealsByAccess = (deals, { owner, role, team }) => {
   if (role === DEFAULT_MANAGER_ROLE) return deals.filter((deal) => deal.team === team);
   return deals.filter((deal) => deal.pic === owner);
 };
+const normalizeTeamFilterValue = (value) => String(value || "").trim();
+const parseTeamPicFilterValue = (value) => {
+  const raw = normalizeTeamFilterValue(value);
+  if (!raw || raw === "all") return { type: "all", key: "" };
+  if (raw.startsWith("team:")) return { type: "team", key: raw.slice(5) };
+  if (raw.startsWith("pic:")) return { type: "pic", key: raw.slice(4) };
+  return { type: "pic", key: raw };
+};
+const matchesTeamPicFilter = (deal, selectedValue) => {
+  const parsed = parseTeamPicFilterValue(selectedValue);
+  if (parsed.type === "all") return true;
+  if (parsed.type === "team") return String(deal.team || "") === parsed.key;
+  return String(deal.pic || "") === parsed.key;
+};
+const buildTeamPicFilterOptions = ({ role, currentAccount, currentTeam, deals }) => {
+  const scopedDeals = Array.isArray(deals) ? deals : [];
+  const teamSet = new Set(scopedDeals.map((deal) => String(deal.team || "").trim()).filter(Boolean));
+  const dynamicTeams = [...teamSet];
+  dynamicTeams.sort((a, b) => {
+    const ai = TEAM_OPTIONS.indexOf(a);
+    const bi = TEAM_OPTIONS.indexOf(b);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return a.localeCompare(b);
+  });
+  const picOptions = [...new Set(scopedDeals.map((deal) => String(deal.pic || "").trim()).filter(Boolean))].sort();
+
+  if (role === DEFAULT_USER_ROLE) {
+    return [{ value: `pic:${currentAccount}`, label: currentAccount, kind: "pic" }];
+  }
+
+  if (role === DEFAULT_MANAGER_ROLE) {
+    const managerTeam = currentTeam ? [{ value: `team:${currentTeam}`, label: `${currentTeam} (TEAM)`, kind: "team" }] : [];
+    return [
+      { value: "all", label: "Tất cả", kind: "all" },
+      ...managerTeam,
+      ...picOptions.map((pic) => ({ value: `pic:${pic}`, label: pic, kind: "pic" })),
+    ];
+  }
+
+  return [
+    { value: "all", label: "Tất cả", kind: "all" },
+    ...dynamicTeams.map((team) => ({ value: `team:${team}`, label: `${team} (TEAM)`, kind: "team" })),
+    ...picOptions.map((pic) => ({ value: `pic:${pic}`, label: pic, kind: "pic" })),
+  ];
+};
 const makeEmptyTelegramConfig = (ownerCodes = DEFAULT_OWNER_CODES) => Object.fromEntries(buildAllOwnerCodes(ownerCodes).map((pic) => [pic, { botToken: "", chatId: "" }]));
 const normalizeTelegramConfig = (raw, ownerCodes = DEFAULT_OWNER_CODES) => {
   const base = makeEmptyTelegramConfig(ownerCodes);
@@ -1471,7 +1518,7 @@ export default function App() {
     setReportSearch("");
     setReportStage("");
     setReportDealStatus("");
-    setReportPIC(effectiveRole === DEFAULT_USER_ROLE ? currentAccount : "all");
+    setReportPIC(effectiveRole === DEFAULT_USER_ROLE ? `pic:${currentAccount}` : "all");
     setReportFrom("");
     setReportTo("");
   };
@@ -1518,34 +1565,32 @@ export default function App() {
 
   const visibleDeals = filterDealsByAccess(deals, { owner: currentAccount, role: effectiveRole, team: effectiveTeam });
   const reportBaseDeals = isMaster ? deals : visibleDeals;
-  const reportPicOptions = (() => {
-    if (effectiveRole === DEFAULT_USER_ROLE) return [currentAccount];
-    if (effectiveRole === DEFAULT_MANAGER_ROLE) {
-      const options = [...new Set(reportBaseDeals.map((deal) => deal.pic).filter(Boolean))];
-      if (!options.includes(currentAccount)) options.unshift(currentAccount);
-      return options;
-    }
-    return [...new Set(reportBaseDeals.map((deal) => deal.pic).filter(Boolean))];
-  })();
+  const reportFilterOptions = buildTeamPicFilterOptions({
+    role: effectiveRole,
+    currentAccount,
+    currentTeam: effectiveTeam,
+    deals: reportBaseDeals,
+  });
   useEffect(() => {
     if (effectiveRole === DEFAULT_USER_ROLE) {
-      if (reportPIC !== currentAccount) setReportPIC(currentAccount);
+      const expected = `pic:${currentAccount}`;
+      if (reportPIC !== expected) setReportPIC(expected);
       return;
     }
-    if (reportPIC !== "all" && !reportPicOptions.includes(reportPIC)) setReportPIC("all");
-  }, [effectiveRole, currentAccount, reportPIC, reportPicOptions]);
-  const picFilterOptions = (() => {
-    if (effectiveRole === DEFAULT_MASTER_ROLE) return allOwnerCodes;
-    const options = [...new Set(visibleDeals.map((deal) => deal.pic).filter(Boolean))];
-    if (!options.includes(currentAccount)) options.unshift(currentAccount);
-    return options;
-  })();
+    if (reportPIC && !reportFilterOptions.some((opt) => opt.value === reportPIC)) setReportPIC("all");
+  }, [effectiveRole, currentAccount, reportPIC, reportFilterOptions]);
+  const pipelineFilterOptions = buildTeamPicFilterOptions({
+    role: effectiveRole,
+    currentAccount,
+    currentTeam: effectiveTeam,
+    deals: visibleDeals,
+  });
   useEffect(() => {
     if (!filterPIC) return;
-    if (!picFilterOptions.includes(filterPIC)) {
+    if (!pipelineFilterOptions.some((opt) => opt.value === filterPIC)) {
       setFilterPIC("");
     }
-  }, [filterPIC, picFilterOptions]);
+  }, [filterPIC, pipelineFilterOptions]);
   const hasDateFilter = Boolean(filterFromDate || filterToDate);
   const filtered = visibleDeals.filter((d) => {
     const searchText = normalizeSearchText(search);
@@ -1557,7 +1602,7 @@ export default function App() {
       (searchPhone && normalizePhoneText(d.phone).includes(searchPhone));
     const mst = !filterStage || d.stage === filterStage;
     const mds = matchDealStatusFilter(d.deal_status, filterDealStatus);
-    const mp = !filterPIC || d.pic === filterPIC;
+    const mp = !filterPIC || matchesTeamPicFilter(d, filterPIC);
     const dealInputDate = getDealInputDateKey(d);
     const fromDate = normalizeDateOnly(filterFromDate);
     const toDate = normalizeDateOnly(filterToDate);
@@ -1574,7 +1619,7 @@ export default function App() {
       (searchPhone && normalizePhoneText(d.phone).includes(searchPhone));
     const mst = !filterStage || d.stage === filterStage;
     const mds = matchDealStatusFilter(d.deal_status, filterDealStatus);
-    const mp = !filterPIC || d.pic === filterPIC;
+    const mp = !filterPIC || matchesTeamPicFilter(d, filterPIC);
     return ms && mst && mds && mp;
   });
   const reportFromKey = normalizeDateOnly(reportFrom);
@@ -1590,7 +1635,7 @@ export default function App() {
       (reportSearchPhone && normalizePhoneText(d.phone).includes(reportSearchPhone));
     const mst = !reportStage || d.stage === reportStage;
     const mds = matchDealStatusFilter(d.deal_status, reportDealStatus);
-    const mp = !reportPIC || reportPIC === "all" || d.pic === reportPIC;
+    const mp = !reportPIC || matchesTeamPicFilter(d, reportPIC);
     return ms && mst && mds && mp;
   });
   const reportFilteredDeals = reportScopedDeals.filter((d) => {
@@ -1781,9 +1826,9 @@ export default function App() {
                       {DEAL_STATUS_FILTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                     {effectiveRole !== DEFAULT_USER_ROLE && (
-                      <select value={filterPIC} onChange={(e) => setFilterPIC(e.target.value)} style={{ ...dropdownStyle(filterPIC), width: "140px", minHeight: "38px" }}>
-                        <option value="">Tất cả PIC</option>
-                        {picFilterOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                      <select value={filterPIC} onChange={(e) => setFilterPIC(e.target.value)} style={{ ...dropdownStyle(filterPIC), width: "170px", minHeight: "38px" }}>
+                        <option value="">Tất cả</option>
+                        {pipelineFilterOptions.filter((opt) => opt.kind !== "all").map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                       </select>
                     )}
                     <div className="pipeline-date-group">
@@ -1841,9 +1886,9 @@ export default function App() {
                       {DEAL_STATUS_OPTIONS.map((status) => <option key={status} value={status}>{status}</option>)}
                     </select>
                     {effectiveRole !== DEFAULT_USER_ROLE && (
-                      <select value={reportPIC} onChange={(e) => setReportPIC(e.target.value)} style={{ ...dropdownStyle(reportPIC), width: "140px", minHeight: "38px" }}>
-                        <option value="all">Tất cả PIC</option>
-                        {reportPicOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                      <select value={reportPIC} onChange={(e) => setReportPIC(e.target.value)} style={{ ...dropdownStyle(reportPIC), width: "170px", minHeight: "38px" }}>
+                        <option value="all">Tất cả</option>
+                        {reportFilterOptions.filter((opt) => opt.kind !== "all").map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                       </select>
                     )}
                     <div className="pipeline-date-group">
@@ -2078,6 +2123,12 @@ function DealCard({ deal, cfg, isDragging, onDragStart, onDragEnd, onEdit, onDel
 function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setReportPIC, reportSearch, reportStage, reportDealStatus, isMaster, followupConfig }) {
   const [rankingSort, setRankingSort] = useState({ key: "totalDeals", direction: "desc" });
   const [expandedSourceTypes, setExpandedSourceTypes] = useState({});
+  const reportPicParsed = parseTeamPicFilterValue(reportPIC);
+  const reportScopeLabel = reportPicParsed.type === "all"
+    ? "Tất cả"
+    : reportPicParsed.type === "team"
+      ? `${reportPicParsed.key} (TEAM)`
+      : reportPicParsed.key;
   const dashNode = <span style={{ color: "#94a3b8", fontWeight: "500" }}>-</span>;
   const metricNode = (value, style = null) => {
     const n = Number(value);
@@ -2112,7 +2163,7 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
       (searchPhone && normalizePhoneText(d.phone).includes(searchPhone));
     const mst = !reportStage || d.stage === reportStage;
     const mds = matchDealStatusFilter(d.deal_status, reportDealStatus);
-    const mp = !reportPIC || reportPIC === "all" || d.pic === reportPIC;
+    const mp = !reportPIC || matchesTeamPicFilter(d, reportPIC);
     return ms && mst && mds && mp;
   });
   const rangedDeals = scopedDeals.filter((d) => isDealInputDateInRange(d));
@@ -2144,7 +2195,7 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
   const revenueWin = wonInRange.reduce((s, d) => s + (Number(d.value) || 0), 0);
   const overdueDealsInRange = rangedDeals.filter((d) => isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT));
   const realtimeOverdueByPic = deals.filter((d) => {
-    const mp = !reportPIC || reportPIC === "all" || d.pic === reportPIC;
+    const mp = !reportPIC || matchesTeamPicFilter(d, reportPIC);
     return mp && isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT);
   });
   const overdueDeals = overdueDealsInRange;
@@ -2491,7 +2542,7 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
         {isMaster && !hasInvalidRange && (
           <div style={{ background: "#fff", border: "1px solid #dde6f0", borderRadius: "12px", padding: "16px", gridColumn: "1/-1" }}>
             <div style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "13px", marginBottom: "6px" }}>Xếp hạng GIP con theo trạng thái deal</div>
-            <div style={{ fontSize: "12px", color: "#6080a0", marginBottom: "14px" }}>Dùng đúng tập dữ liệu đã lọc theo thời gian{reportPIC !== "all" ? ` và mã ${reportPIC}` : ""}. Bấm vào dòng để lọc báo cáo theo mã GIP con.</div>
+            <div style={{ fontSize: "12px", color: "#6080a0", marginBottom: "14px" }}>Dùng đúng tập dữ liệu đã lọc theo thời gian{reportPicParsed.type !== "all" ? ` và bộ lọc ${reportScopeLabel}` : ""}. Bấm vào dòng để lọc báo cáo theo mã GIP con.</div>
             {sortedGipRankingRows.length === 0 ? (
               <div style={{ fontSize: "12px", color: "#c0cfd8", textAlign: "center", padding: "18px 0" }}>Không có dữ liệu deal_status trong phạm vi hiện tại.</div>
             ) : (
@@ -2512,7 +2563,7 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
                   </thead>
                   <tbody>
                     {sortedGipRankingRows.map((row, index) => (
-                      <tr key={row.gipCode} onClick={() => setReportPIC(row.gipCode)} style={{ borderBottom: "1px solid #f0f4f8", background: index % 2 === 0 ? "#fafcff" : "#fff", cursor: "pointer" }}>
+                      <tr key={row.gipCode} onClick={() => setReportPIC(`pic:${row.gipCode}`)} style={{ borderBottom: "1px solid #f0f4f8", background: index % 2 === 0 ? "#fafcff" : "#fff", cursor: "pointer" }}>
                         <td style={{ padding: "9px 8px", textAlign: "left", fontWeight: "700", color: "#1a6fba" }}>{row.gipCode}</td>
                         <td style={{ padding: "9px 6px", textAlign: "center", fontWeight: "700" }}>{metricNode(row.totalDeals)}</td>
                         <td style={{ padding: "9px 6px", textAlign: "center" }}>{metricNode(row.interested)}</td>
@@ -3292,5 +3343,3 @@ function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegram
     </Modal>
   );
 }
-
-
