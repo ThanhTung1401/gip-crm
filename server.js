@@ -2,6 +2,7 @@ import { createServer } from "http";
 import { copyFileSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, extname, isAbsolute, join, resolve } from "path";
 import { fileURLToPath } from "url";
+import { createHash } from "crypto";
 import { google } from "googleapis";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -57,6 +58,7 @@ const MEETING_CADENCE = { Warm: 21, Hot: 21, Win: 30 };
 const FOLLOWUP_HOURS_DEFAULT = { "Data Thô": 100, Freeze: 72, Cold: 48, Warm: 36, Hot: 24, Win: 0 };
 const ALERT_REPEAT_HOURS = 2;
 const TELEGRAM_MAX_MESSAGE_LENGTH = 3500;
+const TELEGRAM_LOCK_TTL_MS = 2 * 60 * 1000;
 const AUTO_BACKUP_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_BACKUP_FILES = 24;
 const ENABLE_LOCAL_BACKUP = String(process.env.ENABLE_LOCAL_BACKUP || "true").toLowerCase() !== "false";
@@ -91,21 +93,25 @@ function ensureStore() {
 
 function loadTelegramAlertState() {
   try {
-    if (!existsSync(TELEGRAM_ALERT_STATE_FILE)) return { alerts: {} };
+    if (!existsSync(TELEGRAM_ALERT_STATE_FILE)) return { alerts: {}, batchDedup: {}, locks: {} };
     const raw = JSON.parse(readFileSync(TELEGRAM_ALERT_STATE_FILE, "utf8"));
     const alerts = raw?.alerts && typeof raw.alerts === "object" ? raw.alerts : {};
-    return { alerts };
+    const batchDedup = raw?.batchDedup && typeof raw.batchDedup === "object" ? raw.batchDedup : {};
+    const locks = raw?.locks && typeof raw.locks === "object" ? raw.locks : {};
+    return { alerts, batchDedup, locks };
   } catch {
-    return { alerts: {} };
+    return { alerts: {}, batchDedup: {}, locks: {} };
   }
 }
 
 function saveTelegramAlertState(nextState) {
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
   const alerts = nextState?.alerts && typeof nextState.alerts === "object" ? nextState.alerts : {};
+  const batchDedup = nextState?.batchDedup && typeof nextState.batchDedup === "object" ? nextState.batchDedup : {};
+  const locks = nextState?.locks && typeof nextState.locks === "object" ? nextState.locks : {};
   writeFileSync(
     TELEGRAM_ALERT_STATE_FILE,
-    JSON.stringify({ alerts, updatedAt: new Date().toISOString() }, null, 2),
+    JSON.stringify({ alerts, batchDedup, locks, updatedAt: new Date().toISOString() }, null, 2),
   );
 }
 
@@ -1091,10 +1097,59 @@ function chunkTelegramMessages(owner, alerts) {
   return chunks;
 }
 
-async function sendOwnerAlertBatches(owner, cfg, ownerAlerts) {
+function buildBatchDedupKey(owner, alertTypes, message) {
+  const payload = `${owner}|${[...new Set(alertTypes)].sort().join(",")}|${message}`;
+  return createHash("sha1").update(payload).digest("hex");
+}
+
+function acquireTelegramGlobalLock(alertState) {
+  const now = Date.now();
+  const locks = alertState?.locks && typeof alertState.locks === "object" ? alertState.locks : {};
+  const current = locks.telegram_alert_global_lock || {};
+  const lockUntilMs = current.lockUntil ? new Date(current.lockUntil).getTime() : 0;
+  if (Number.isFinite(lockUntilMs) && lockUntilMs > now) {
+    return { acquired: false, lockUntil: current.lockUntil || null };
+  }
+  const lockUntil = new Date(now + TELEGRAM_LOCK_TTL_MS).toISOString();
+  locks.telegram_alert_global_lock = { lockUntil, owner: "scanAndNotifyV2", acquiredAt: new Date(now).toISOString() };
+  alertState.locks = locks;
+  return { acquired: true, lockUntil };
+}
+
+function releaseTelegramGlobalLock(alertState) {
+  const locks = alertState?.locks && typeof alertState.locks === "object" ? alertState.locks : {};
+  if (!locks.telegram_alert_global_lock) return;
+  delete locks.telegram_alert_global_lock;
+  alertState.locks = locks;
+}
+
+async function sendOwnerAlertBatches(owner, cfg, ownerAlerts, batchDedup, repeatMs) {
   const messages = chunkTelegramMessages(owner, ownerAlerts);
   let sentMessageCount = 0;
+  let skippedByBatchDedup = 0;
+  let failedMessages = 0;
   for (const msg of messages) {
+    const alertTypes = ownerAlerts.map((alert) => alert.alertType || "unknown");
+    const batchKey = buildBatchDedupKey(owner, alertTypes, msg);
+    const now = Date.now();
+    const previousBatch = batchDedup[batchKey];
+    const lastBatchMs = previousBatch?.lastSentAt ? new Date(previousBatch.lastSentAt).getTime() : 0;
+    if (previousBatch && Number.isFinite(lastBatchMs) && now - lastBatchMs < repeatMs) {
+      skippedByBatchDedup += 1;
+      console.info("[telegram] skip batch dedup", {
+        owner,
+        batchKey,
+        lastSentAt: previousBatch.lastSentAt,
+        nextAllowedAt: new Date(lastBatchMs + repeatMs).toISOString(),
+      });
+      continue;
+    }
+    batchDedup[batchKey] = {
+      owner,
+      alertTypes: [...new Set(alertTypes)].sort(),
+      pendingAt: new Date(now).toISOString(),
+      status: "pending",
+    };
     let telegramOk = false;
     try {
       const telegramResp = await sendTelegram(cfg.botToken, cfg.chatId, msg);
@@ -1104,12 +1159,23 @@ async function sendOwnerAlertBatches(owner, cfg, ownerAlerts) {
         owner,
         error: error?.message || "telegram_send_failed",
         length: String(msg || "").length,
+        batchKey,
       });
     }
-    if (!telegramOk) continue;
+    if (!telegramOk) {
+      failedMessages += 1;
+      delete batchDedup[batchKey];
+      continue;
+    }
+    batchDedup[batchKey] = {
+      owner,
+      alertTypes: [...new Set(alertTypes)].sort(),
+      lastSentAt: new Date().toISOString(),
+      status: "sent",
+    };
     sentMessageCount += 1;
   }
-  return { ok: sentMessageCount > 0, sentMessageCount };
+  return { ok: sentMessageCount > 0, sentMessageCount, skippedByBatchDedup, failedMessages };
 }
 
 async function sendTelegram(botToken, chatId, text) {
@@ -1262,6 +1328,162 @@ async function scanAndNotifyV2() {
   state.alertLog = state.alertLog || {};
   saveState(state);
   return { sent, totalAlerts: alerts.length };
+}
+
+async function scanAndNotifyV3() {
+  const state = loadState();
+  const alerts = buildAlertsV2(state);
+  const groupedByOwner = alerts.reduce((acc, alert) => {
+    acc[alert.owner] = (acc[alert.owner] || 0) + 1;
+    return acc;
+  }, {});
+  console.info("[telegram] totalCurrentAlertsFromCRM=", alerts.length);
+  console.info("[telegram] groupedByOwner=", groupedByOwner);
+
+  const alertState = loadTelegramAlertState();
+  const lock = acquireTelegramGlobalLock(alertState);
+  if (!lock.acquired) {
+    console.info("[telegram] skippedByGlobalLock", { lockUntil: lock.lockUntil });
+    return {
+      sent: [],
+      totalAlerts: alerts.length,
+      totalAlertsFound: alerts.length,
+      eligibleAlertsAfterCooldown: 0,
+      skippedByCooldown: 0,
+      skippedByGlobalLock: 1,
+      skippedByBatchDedup: 0,
+      sentMessages: 0,
+      failedMessages: 0,
+    };
+  }
+  saveTelegramAlertState(alertState);
+
+  const nextSentAlerts = { ...(alertState.alerts || {}) };
+  const batchDedup = { ...(alertState.batchDedup || {}) };
+  const activeKeys = new Set(alerts.map((alert) => alert.key));
+  const dueByOwner = {};
+  const skippedByOwner = {};
+  const now = Date.now();
+  const repeatMs = ALERT_REPEAT_HOURS * 3600000;
+  let skippedByCooldown = 0;
+  let skippedByBatchDedup = 0;
+  let sentMessages = 0;
+  let failedMessages = 0;
+
+  alerts.forEach((alert) => {
+    const previous = nextSentAlerts[alert.key];
+    const lastSentAtMs = previous?.lastSentAt ? new Date(previous.lastSentAt).getTime() : 0;
+    const changedByUpdate = !!previous && previous.stateToken !== alert.stateToken;
+    const passedCooldown = !!previous && Number.isFinite(lastSentAtMs) && now - lastSentAtMs >= repeatMs;
+    const shouldSend = !previous || changedByUpdate || passedCooldown;
+    if (!shouldSend) {
+      skippedByCooldown += 1;
+      skippedByOwner[alert.owner] = (skippedByOwner[alert.owner] || 0) + 1;
+      const nextAllowedAt = Number.isFinite(lastSentAtMs) && lastSentAtMs > 0 ? new Date(lastSentAtMs + repeatMs).toISOString() : null;
+      console.info("[telegram-alert] skip", {
+        alertKey: alert.key,
+        reason: "cooldown_active",
+        owner: alert.owner,
+        dealId: alert.dealId,
+        alertType: alert.alertType,
+        lastSentAt: previous?.lastSentAt || null,
+        nextAllowedAt,
+      });
+      return;
+    }
+    if (!dueByOwner[alert.owner]) dueByOwner[alert.owner] = [];
+    dueByOwner[alert.owner].push(alert);
+  });
+
+  const sent = [];
+  const eligibleAlertsAfterCooldown = Object.values(dueByOwner).reduce((sum, list) => sum + list.length, 0);
+  for (const [owner, ownerAlerts] of Object.entries(dueByOwner)) {
+    const cfg = state.telegramConfig?.[owner];
+    if (!cfg?.botToken || !cfg?.chatId || !ownerAlerts.length) {
+      if (ownerAlerts.length) console.info("[telegram] skipped because telegram config missing", { owner, alerts: ownerAlerts.length });
+      continue;
+    }
+    console.info("[telegram] owner_scan", {
+      owner,
+      total: groupedByOwner[owner] || 0,
+      eligible: ownerAlerts.length,
+      skippedCooldown: skippedByOwner[owner] || 0,
+    });
+
+    const sendResult = await sendOwnerAlertBatches(owner, cfg, ownerAlerts, batchDedup, repeatMs);
+    skippedByBatchDedup += sendResult.skippedByBatchDedup || 0;
+    sentMessages += sendResult.sentMessageCount || 0;
+    failedMessages += sendResult.failedMessages || 0;
+    if (!sendResult.ok) continue;
+
+    const sentAt = new Date().toISOString();
+    ownerAlerts.forEach((alert) => {
+      const previous = nextSentAlerts[alert.key];
+      const mode = !previous ? "first_send" : previous.stateToken !== alert.stateToken ? "resolved_then_realert" : "resend_after_cooldown";
+      nextSentAlerts[alert.key] = {
+        alertKey: alert.key,
+        dealId: alert.dealId,
+        owner: alert.owner,
+        alertType: alert.alertType,
+        stage: alert.stage,
+        dealStatus: alert.dealStatus,
+        stateToken: alert.stateToken,
+        sentAt,
+        lastSentAt: sentAt,
+      };
+      console.info("[telegram-alert] sent", {
+        alertKey: alert.key,
+        mode,
+        owner: alert.owner,
+        dealId: alert.dealId,
+        alertType: alert.alertType,
+      });
+    });
+    sent.push({ owner, count: ownerAlerts.length, messages: sendResult.sentMessageCount });
+  }
+
+  Object.keys(nextSentAlerts).forEach((key) => {
+    if (activeKeys.has(key)) return;
+    console.info("[telegram-alert] resolved", { alertKey: key, reason: "not_active" });
+    delete nextSentAlerts[key];
+  });
+
+  const batchDedupClean = {};
+  Object.entries(batchDedup).forEach(([key, item]) => {
+    const at = item?.lastSentAt || item?.pendingAt;
+    const atMs = at ? new Date(at).getTime() : 0;
+    if (!Number.isFinite(atMs) || now - atMs > repeatMs * 2) return;
+    batchDedupClean[key] = item;
+  });
+
+  state.sentAlerts = nextSentAlerts;
+  state.alertLog = state.alertLog || {};
+  saveState(state);
+  alertState.alerts = nextSentAlerts;
+  alertState.batchDedup = batchDedupClean;
+  releaseTelegramGlobalLock(alertState);
+  saveTelegramAlertState(alertState);
+
+  console.info("[telegram] job_result", {
+    totalAlertsFound: alerts.length,
+    eligibleAlertsAfterCooldown,
+    skippedByCooldown,
+    skippedByGlobalLock: 0,
+    skippedByBatchDedup,
+    sentMessages,
+    failedMessages,
+  });
+  return {
+    sent,
+    totalAlerts: alerts.length,
+    totalAlertsFound: alerts.length,
+    eligibleAlertsAfterCooldown,
+    skippedByCooldown,
+    skippedByGlobalLock: 0,
+    skippedByBatchDedup,
+    sentMessages,
+    failedMessages,
+  };
 }
 
 async function route(req, res) {
@@ -1486,7 +1708,7 @@ async function route(req, res) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/scan") {
-    const result = await scanAndNotifyV2();
+    const result = await scanAndNotifyV3();
     sendJson(res, 200, { ok: true, ...result });
     return;
   }
@@ -1519,7 +1741,7 @@ createServer((req, res) => {
 });
 
 setInterval(() => {
-  scanAndNotifyV2().catch((error) => {
+  scanAndNotifyV3().catch((error) => {
     console.error("scan_failed", error);
   });
 }, 60_000);
