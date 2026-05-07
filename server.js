@@ -825,6 +825,8 @@ function getSlaStatus(deal) {
   if (!max) return null;
   const days = daysBetween(getLatestTouchDate(deal, getStageEnteredAt(deal)), new Date().toISOString());
   if (days > max) return { type: "overdue", label: `Qua han ${days - max}n`, days, limit: max };
+  if (days >= max - 1) return { type: "warning", label: "Het han hom nay", days, limit: max };
+  if (days >= max * 0.7) return { type: "caution", label: `Con ${max - days}n`, days, limit: max };
   return null;
 }
 
@@ -832,7 +834,9 @@ function getMeetingStatus(deal) {
   const cadence = MEETING_CADENCE[deal.stage];
   if (!cadence || !deal.lastMeeting) return null;
   const days = daysBetween(getLatestTouchDate(deal, deal.lastMeeting), new Date().toISOString());
-  if (days >= cadence) return { type: "overdue", label: `Gap KH qua han ${days - cadence}n`, days, limit: cadence };
+  const due = cadence - days;
+  if (due <= 0) return { type: "overdue", label: `Gap KH qua han ${-due}n`, days, limit: cadence };
+  if (due <= 3) return { type: "warning", label: `Gap KH trong ${due}n`, days, limit: cadence };
   return null;
 }
 
@@ -843,7 +847,35 @@ function getFollowupStatus(deal, followupConfig) {
   if (!since) return null;
   const hours = Math.max(0, Math.round((Date.now() - new Date(since).getTime()) / 3600000));
   if (hours > limit) return { type: "overdue", label: `Chua co note ${hours}h/${limit}h`, hours, limit };
+  if (hours >= Math.max(1, Math.floor(limit * 0.75))) return { type: "warning", label: `Can note trong ${limit - hours}h`, hours, limit };
   return null;
+}
+
+function getAlertPriority(deal, followupConfig) {
+  const sla = getSlaStatus(deal);
+  const meeting = getMeetingStatus(deal);
+  const followup = getFollowupStatus(deal, followupConfig);
+  if ((sla && sla.type === "overdue") || (meeting && meeting.type === "overdue") || (followup && followup.type === "overdue")) return "critical";
+  if ((sla && (sla.type === "warning" || sla.type === "caution")) || (meeting && meeting.type === "warning") || (followup && followup.type === "warning")) return "warning";
+  return null;
+}
+
+function getCurrentAlerts(state) {
+  return (state.deals || [])
+    .map((deal) => {
+      const sla = getSlaStatus(deal);
+      const meeting = getMeetingStatus(deal);
+      const followup = getFollowupStatus(deal, state.followupConfig);
+      const priority = getAlertPriority(deal, state.followupConfig);
+      return { deal, sla, meeting, followup, priority };
+    })
+    .filter((item) => item.priority)
+    .sort((a, b) => {
+      const score = { critical: 2, warning: 1 };
+      const diff = (score[b.priority] || 0) - (score[a.priority] || 0);
+      if (diff !== 0) return diff;
+      return new Date(b.deal.updatedAt || b.deal.createdAt || 0) - new Date(a.deal.updatedAt || a.deal.createdAt || 0);
+    });
 }
 
 function buildAlerts(state) {
@@ -894,10 +926,12 @@ function buildAlerts(state) {
 
 function buildAlertsV2(state) {
   const entries = [];
-  for (const deal of state.deals) {
-    const sla = getSlaStatus(deal);
-    const meeting = getMeetingStatus(deal);
-    const followup = getFollowupStatus(deal, state.followupConfig);
+  const currentAlerts = getCurrentAlerts(state);
+  for (const item of currentAlerts) {
+    const deal = item.deal;
+    const sla = item.sla;
+    const meeting = item.meeting;
+    const followup = item.followup;
     if (sla?.type === "overdue") {
       entries.push({
         key: `${deal.pic}_${deal.id}_overdue_stage`,
@@ -913,6 +947,23 @@ function buildAlertsV2(state) {
         metricUnit: "ngay",
         reason: `Qua han stage ${deal.stage}`,
         text: `⚠️ SLA QUA HAN: *${deal.brand || "Khong ten"}* dang o ${deal.stage} da ${sla.days} ngay (max ${sla.limit}n)`,
+      });
+    }
+    if (sla?.type === "warning" || sla?.type === "caution") {
+      entries.push({
+        key: `${deal.pic}_${deal.id}_near_sla`,
+        dealId: deal.id,
+        owner: deal.pic,
+        alertType: "near_sla",
+        brand: deal.brand || "Khong ten",
+        stage: deal.stage,
+        dealStatus: deal.deal_status || "",
+        stateToken: String(deal.updatedAt || ""),
+        metricValue: sla.days,
+        metricLimit: sla.limit,
+        metricUnit: "ngay",
+        reason: sla.label || "Sap cham han SLA",
+        text: `⏳ SLA CANH BAO: *${deal.brand || "Khong ten"}* (${deal.stage}) ${sla.label || ""}`,
       });
     }
     if (meeting?.type === "overdue") {
@@ -932,6 +983,23 @@ function buildAlertsV2(state) {
         text: `📅 GAP KH: *${deal.brand || "Khong ten"}* (${deal.stage}) da ${meeting.days} ngay chua gap (can gap moi ${meeting.limit}n)`,
       });
     }
+    if (meeting?.type === "warning") {
+      entries.push({
+        key: `${deal.pic}_${deal.id}_near_meeting`,
+        dealId: deal.id,
+        owner: deal.pic,
+        alertType: "near_meeting",
+        brand: deal.brand || "Khong ten",
+        stage: deal.stage,
+        dealStatus: deal.deal_status || "",
+        stateToken: String(deal.updatedAt || ""),
+        metricValue: meeting.days,
+        metricLimit: meeting.limit,
+        metricUnit: "ngay",
+        reason: meeting.label || "Sap den lich gap KH",
+        text: `📌 NHAC GAP KH: *${deal.brand || "Khong ten"}* (${deal.stage}) ${meeting.label || ""}`,
+      });
+    }
     if (followup?.type === "overdue") {
       entries.push({
         key: `${deal.pic}_${deal.id}_missing_note`,
@@ -947,6 +1015,23 @@ function buildAlertsV2(state) {
         metricUnit: "h",
         reason: "Chua co ghi chu moi",
         text: `📝 CHUA CO NOTE: *${deal.brand || "Khong ten"}* (${deal.stage}) da ${followup.hours}h chua duoc cap nhat ghi chu (max ${followup.limit}h)`,
+      });
+    }
+    if (followup?.type === "warning") {
+      entries.push({
+        key: `${deal.pic}_${deal.id}_near_note`,
+        dealId: deal.id,
+        owner: deal.pic,
+        alertType: "near_note",
+        brand: deal.brand || "Khong ten",
+        stage: deal.stage,
+        dealStatus: deal.deal_status || "",
+        stateToken: String(deal.updatedAt || ""),
+        metricValue: followup.hours,
+        metricLimit: followup.limit,
+        metricUnit: "h",
+        reason: followup.label || "Sap can cap nhat ghi chu",
+        text: `📝 NHAC NOTE: *${deal.brand || "Khong ten"}* (${deal.stage}) ${followup.label || ""}`,
       });
     }
   }
@@ -979,7 +1064,7 @@ function formatAlertItemText(alert) {
 }
 
 function chunkTelegramMessages(owner, alerts) {
-  const header = `🔔 GIP Pipeline Alert - ${owner}\n\n`;
+  const header = `🔔 GIP Pipeline Alert - ${owner}\nTong canh bao: ${alerts.length}\n\n`;
   const chunks = [];
   let current = header;
   for (const alert of alerts) {
@@ -1078,10 +1163,17 @@ async function scanAndNotify() {
 async function scanAndNotifyV2() {
   const state = loadState();
   const alerts = buildAlertsV2(state);
+  const groupedByOwner = alerts.reduce((acc, alert) => {
+    acc[alert.owner] = (acc[alert.owner] || 0) + 1;
+    return acc;
+  }, {});
+  console.info("[telegram] totalCurrentAlertsFromCRM=", alerts.length);
+  console.info("[telegram] groupedByOwner=", groupedByOwner);
   const alertState = loadTelegramAlertState();
   const nextSentAlerts = { ...(alertState.alerts || {}) };
   const activeKeys = new Set(alerts.map((alert) => alert.key));
   const dueByOwner = {};
+  const skippedByOwner = {};
   const now = Date.now();
   const repeatMs = ALERT_REPEAT_HOURS * 3600000;
   let skippedByCooldown = 0;
@@ -1094,6 +1186,7 @@ async function scanAndNotifyV2() {
     const shouldSend = !previous || changedByUpdate || passedCooldown;
     if (!shouldSend) {
       skippedByCooldown += 1;
+      skippedByOwner[alert.owner] = (skippedByOwner[alert.owner] || 0) + 1;
       const nextAllowedAt = Number.isFinite(lastSentAtMs) && lastSentAtMs > 0 ? new Date(lastSentAtMs + repeatMs).toISOString() : null;
       console.info("[telegram-alert] skip", {
         alertKey: alert.key,
@@ -1119,8 +1212,17 @@ async function scanAndNotifyV2() {
   });
   for (const [owner, ownerAlerts] of Object.entries(dueByOwner)) {
     const cfg = state.telegramConfig?.[owner];
-    if (!cfg?.botToken || !cfg?.chatId || !ownerAlerts.length) continue;
+    if (!cfg?.botToken || !cfg?.chatId || !ownerAlerts.length) {
+      if (ownerAlerts.length) console.info("[telegram] skipped because telegram config missing", { owner, alerts: ownerAlerts.length });
+      continue;
+    }
     const text = `🔔 *GIP Pipeline Alert* - ${owner}\n\n${ownerAlerts.map((item) => item.text).join("\n\n")}`;
+    console.info("[telegram] owner_scan", {
+      owner,
+      total: groupedByOwner[owner] || 0,
+      eligible: ownerAlerts.length,
+      skippedCooldown: skippedByOwner[owner] || 0,
+    });
     const sendResult = await sendOwnerAlertBatches(owner, cfg, ownerAlerts);
     if (!sendResult.ok) continue;
     const sentAt = new Date().toISOString();
