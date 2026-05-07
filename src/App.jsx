@@ -656,6 +656,55 @@ const matchDealStatusFilter = (dealStatus, filterValue) => {
   if (filterValue === "newLead") return String(dealStatus || "").trim() === "New Lead";
   return normalized === filterValue;
 };
+const DRILLDOWN_STORAGE_KEY = "gip_report_drilldown_context";
+const applyReportFilters = (deals, { search = "", stage = "", dealStatus = "", pic = "" }) => {
+  const searchText = normalizeSearchText(search);
+  const searchPhone = normalizePhoneText(search);
+  return (Array.isArray(deals) ? deals : []).filter((d) => {
+    const ms =
+      !searchText ||
+      normalizeSearchText(d.brand).includes(searchText) ||
+      normalizeSearchText(d.contact).includes(searchText) ||
+      normalizeSearchText(d.email).includes(searchText) ||
+      (searchPhone && normalizePhoneText(d.phone).includes(searchPhone));
+    const mst = !stage || d.stage === stage;
+    const mds = matchDealStatusFilter(d.deal_status, dealStatus);
+    const mp = !pic || matchesTeamPicFilter(d, pic);
+    return ms && mst && mds && mp;
+  });
+};
+const applyInputDateRange = (deals, fromDate, toDate) => {
+  const fromKey = normalizeDateOnly(fromDate);
+  const toKey = normalizeDateOnly(toDate);
+  if (!fromKey && !toKey) return Array.isArray(deals) ? deals : [];
+  return (Array.isArray(deals) ? deals : []).filter((deal) => {
+    const inputDateKey = getDealInputDateKey(deal);
+    if (!inputDateKey) return false;
+    if (fromKey && inputDateKey < fromKey) return false;
+    if (toKey && inputDateKey > toKey) return false;
+    return true;
+  });
+};
+const serializeDrilldownToStorage = (context) => {
+  try {
+    if (!context) {
+      sessionStorage.removeItem(DRILLDOWN_STORAGE_KEY);
+      return;
+    }
+    sessionStorage.setItem(DRILLDOWN_STORAGE_KEY, JSON.stringify(context));
+  } catch {}
+};
+const parseDrilldownFromStorage = () => {
+  try {
+    const raw = sessionStorage.getItem(DRILLDOWN_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.dealIds)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
 
 const exportExcel = (deals, reportMonth) => {
   const wb = XLSX.utils.book_new();
@@ -933,6 +982,7 @@ export default function App() {
   const [draggingId, setDraggingId] = useState(null);
   const [syncState, setSyncState] = useState("idle");
   const [deletingDealIds, setDeletingDealIds] = useState({});
+  const [drilldownContext, setDrilldownContext] = useState(null);
   const [search, setSearch] = useState("");
   const [filterPIC, setFilterPIC] = useState("");
   const [filterStage, setFilterStage] = useState("");
@@ -1001,6 +1051,11 @@ export default function App() {
     } catch {}
     setLoaded(true);
   }, []);
+  useEffect(() => {
+    if (!loaded) return;
+    const persisted = parseDrilldownFromStorage();
+    if (persisted) setDrilldownContext(persisted);
+  }, [loaded]);
 
   useEffect(() => {
     setAuthConfig((prev) => normalizeAuthConfig(prev, ownerCodes));
@@ -1668,6 +1723,21 @@ export default function App() {
     setFilterToDate("");
     setActiveDatePreset("");
   };
+  const clearDrilldownContext = () => {
+    setDrilldownContext(null);
+    serializeDrilldownToStorage(null);
+  };
+  const handleReportDrilldown = (context) => {
+    if (!context || !Array.isArray(context.dealIds)) return;
+    const next = {
+      ...context,
+      sourcePage: "reports",
+      createdAt: new Date().toISOString(),
+    };
+    setDrilldownContext(next);
+    serializeDrilldownToStorage(next);
+    setTab("pipeline");
+  };
   const resetReportFilters = () => {
     setReportSearch("");
     setReportStage("");
@@ -1746,63 +1816,34 @@ export default function App() {
     }
   }, [filterPIC, pipelineFilterOptions]);
   const hasDateFilter = Boolean(filterFromDate || filterToDate);
-  const filtered = visibleDeals.filter((d) => {
-    const searchText = normalizeSearchText(search);
-    const searchPhone = normalizePhoneText(search);
-    const ms =
-      !searchText ||
-      normalizeSearchText(d.brand).includes(searchText) ||
-      normalizeSearchText(d.contact).includes(searchText) ||
-      normalizeSearchText(d.email).includes(searchText) ||
-      (searchPhone && normalizePhoneText(d.phone).includes(searchPhone));
-    const mst = !filterStage || d.stage === filterStage;
-    const mds = matchDealStatusFilter(d.deal_status, filterDealStatus);
-    const mp = !filterPIC || matchesTeamPicFilter(d, filterPIC);
+  const filtered = applyReportFilters(visibleDeals, {
+    search,
+    stage: filterStage,
+    dealStatus: filterDealStatus,
+    pic: filterPIC,
+  }).filter((d) => {
     const dealInputDate = getDealInputDateKey(d);
     const fromDate = normalizeDateOnly(filterFromDate);
     const toDate = normalizeDateOnly(filterToDate);
     const md = !hasDateFilter || (dealInputDate && (!fromDate || dealInputDate >= fromDate) && (!toDate || dealInputDate <= toDate));
-    return ms && mst && mds && mp && md;
+    return md;
   });
-  const filteredNoDate = visibleDeals.filter((d) => {
-    const searchText = normalizeSearchText(search);
-    const searchPhone = normalizePhoneText(search);
-    const ms =
-      !searchText ||
-      normalizeSearchText(d.brand).includes(searchText) ||
-      normalizeSearchText(d.contact).includes(searchText) ||
-      normalizeSearchText(d.email).includes(searchText) ||
-      (searchPhone && normalizePhoneText(d.phone).includes(searchPhone));
-    const mst = !filterStage || d.stage === filterStage;
-    const mds = matchDealStatusFilter(d.deal_status, filterDealStatus);
-    const mp = !filterPIC || matchesTeamPicFilter(d, filterPIC);
-    return ms && mst && mds && mp;
+  const filteredNoDate = applyReportFilters(visibleDeals, {
+    search,
+    stage: filterStage,
+    dealStatus: filterDealStatus,
+    pic: filterPIC,
   });
   const reportFromKey = normalizeDateOnly(reportFrom);
   const reportToKey = normalizeDateOnly(reportTo);
   const hasReportDateFilter = Boolean(reportFromKey || reportToKey);
-  const reportSearchText = normalizeSearchText(reportSearch);
-  const reportSearchPhone = normalizePhoneText(reportSearch);
-  const reportScopedDeals = reportBaseDeals.filter((d) => {
-    const ms =
-      !reportSearchText ||
-      normalizeSearchText(d.brand).includes(reportSearchText) ||
-      normalizeSearchText(d.contact).includes(reportSearchText) ||
-      normalizeSearchText(d.email).includes(reportSearchText) ||
-      (reportSearchPhone && normalizePhoneText(d.phone).includes(reportSearchPhone));
-    const mst = !reportStage || d.stage === reportStage;
-    const mds = matchDealStatusFilter(d.deal_status, reportDealStatus);
-    const mp = !reportPIC || matchesTeamPicFilter(d, reportPIC);
-    return ms && mst && mds && mp;
+  const reportScopedDeals = applyReportFilters(reportBaseDeals, {
+    search: reportSearch,
+    stage: reportStage,
+    dealStatus: reportDealStatus,
+    pic: reportPIC,
   });
-  const reportFilteredDeals = reportScopedDeals.filter((d) => {
-    if (!hasReportDateFilter) return true;
-    const inputDateKey = getDealInputDateKey(d);
-    if (!inputDateKey) return false;
-    if (reportFromKey && inputDateKey < reportFromKey) return false;
-    if (reportToKey && inputDateKey > reportToKey) return false;
-    return true;
-  });
+  const reportFilteredDeals = hasReportDateFilter ? applyInputDateRange(reportScopedDeals, reportFrom, reportTo) : reportScopedDeals;
   const isWonInReportRange = (deal) => {
     const wonDateKey = normalizeDateOnly(resolveWonAt(deal));
     if (!wonDateKey) return false;
@@ -1811,6 +1852,11 @@ export default function App() {
     return true;
   };
   const reportWinDeals = reportScopedDeals.filter((deal) => isWonInReportRange(deal));
+  const pipelineDrilldownDeals = (() => {
+    if (!drilldownContext || !Array.isArray(drilldownContext.dealIds)) return filtered;
+    const idSet = new Set(drilldownContext.dealIds.map((id) => String(id)));
+    return visibleDeals.filter((deal) => idSet.has(String(deal.id)));
+  })();
   const kpiDeals = tab === "pipeline" || tab === "alerts" ? filtered : tab === "report" ? reportFilteredDeals : visibleDeals;
 
   const overdueCount = kpiDeals.filter((d) => isDealCurrentlyOverdue(d, followupConfig)).length;
@@ -2106,9 +2152,21 @@ export default function App() {
               </div>
             )}
 
-            {tab === "pipeline" && <KanbanBoard deals={filtered} dragOver={dragOver} setDragOver={setDragOver} draggingId={draggingId} setDraggingId={setDraggingId} moveDeal={moveDeal} onEdit={(d) => setModalDeal(d)} onDelete={deleteDeal} deletingDealIds={deletingDealIds} onAdd={(stage) => openAddOptions({ stage, pic: ownerMode || "" })} />}
+            {tab === "pipeline" && (
+              <>
+                {drilldownContext && (
+                  <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "10px", padding: "10px 12px", marginBottom: "12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+                    <div style={{ fontSize: "12px", color: "#1e3a8a", fontWeight: "600" }}>
+                      Đang xem: {drilldownContext.label || "Drill-down"} · {drilldownContext.dealIds?.length || 0} lead · từ Báo cáo
+                    </div>
+                    <Btn onClick={clearDrilldownContext}>Xóa lọc drill-down</Btn>
+                  </div>
+                )}
+                <KanbanBoard deals={pipelineDrilldownDeals} dragOver={dragOver} setDragOver={setDragOver} draggingId={draggingId} setDraggingId={setDraggingId} moveDeal={moveDeal} onEdit={(d) => setModalDeal(d)} onDelete={deleteDeal} deletingDealIds={deletingDealIds} onAdd={(stage) => openAddOptions({ stage, pic: ownerMode || "" })} />
+              </>
+            )}
             {tab === "alerts" && <AlertView alertDeals={alertDeals} onEdit={(deal) => setModalDeal(deal)} />}
-            {tab === "report" && <ReportView deals={isMaster ? deals : visibleDeals} ownerCodes={allOwnerCodes} reportFrom={reportFrom} reportTo={reportTo} reportPIC={ownerMode || reportPIC} setReportPIC={setReportPIC} reportSearch={reportSearch} reportStage={reportStage} reportDealStatus={reportDealStatus} isMaster={isMaster} followupConfig={followupConfig} />}
+            {tab === "report" && <ReportView deals={isMaster ? deals : visibleDeals} ownerCodes={allOwnerCodes} reportFrom={reportFrom} reportTo={reportTo} reportPIC={ownerMode || reportPIC} setReportPIC={setReportPIC} reportSearch={reportSearch} reportStage={reportStage} reportDealStatus={reportDealStatus} isMaster={isMaster} followupConfig={followupConfig} onDrilldown={handleReportDrilldown} />}
           </div>
         </div>
       </div>
@@ -2187,6 +2245,12 @@ function DealCard({ deal, cfg, isDragging, isDeleting = false, onDragStart, onDr
   const mtg = meetingStatus(deal);
   const slaColor = sla?.type === "overdue" ? "#c0392b" : sla?.type === "warning" ? "#b86e00" : "#6b7c93";
   const mtgColor = mtg?.type === "overdue" ? "#c0392b" : "#b86e00";
+  const handleCardDoubleClick = (event) => {
+    if (isDragging) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest("[data-no-card-dblclick]")) return;
+    onEdit();
+  };
 
   return (
     <div
@@ -2195,7 +2259,9 @@ function DealCard({ deal, cfg, isDragging, isDeleting = false, onDragStart, onDr
       onDragEnd={onDragEnd}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      style={{ background: hover ? "#f8fbff" : UI.card, border: `1px solid ${sla?.type === "overdue" ? "#fecaca" : hover ? cfg.border : UI.border}`, borderRadius: "12px", padding: "10px", cursor: "grab", opacity: isDragging ? 0.4 : 1, transition: "all 0.12s", boxShadow: hover ? "0 8px 24px rgba(37,99,235,0.12)" : "0 1px 2px rgba(15,23,42,0.04)" }}
+      onDoubleClick={handleCardDoubleClick}
+      title="Double click để chỉnh sửa"
+      style={{ background: hover ? "#f8fbff" : UI.card, border: `1px solid ${sla?.type === "overdue" ? "#fecaca" : hover ? cfg.border : UI.border}`, borderRadius: "12px", padding: "10px", cursor: isDragging ? "grabbing" : "pointer", opacity: isDragging ? 0.4 : 1, transition: "all 0.12s", boxShadow: hover ? "0 8px 24px rgba(37,99,235,0.12)" : "0 1px 2px rgba(15,23,42,0.04)" }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "6px" }}>
         <div title={deal.brand || "—"} style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "12px", lineHeight: 1.25, flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{deal.brand || "—"}</div>
@@ -2241,8 +2307,8 @@ function DealCard({ deal, cfg, isDragging, isDeleting = false, onDragStart, onDr
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px", paddingTop: "6px", borderTop: "1px solid #eef3f8" }}>
         <span style={{ fontSize: "9px", color: "#a0b8d0" }}>📅 {fmtDate(deal.dataInputDate || deal.createdAt) || "—"}</span>
         <div style={{ display: "flex", gap: "6px" }}>
-          {notes.length > 0 && <button onClick={(e) => { e.stopPropagation(); setShowNotes((v) => !v); }} style={{ background: "transparent", border: "none", fontSize: "9px", color: "#b86e00", cursor: "pointer", fontFamily: "inherit", padding: 0 }}>💬 {notes.length}</button>}
-          {history.length > 0 && <button onClick={(e) => { e.stopPropagation(); setShowHistory((v) => !v); }} style={{ background: "transparent", border: "none", fontSize: "9px", color: "#1a6fba", cursor: "pointer", fontFamily: "inherit", padding: 0 }}>🕐 {history.length}</button>}
+          {notes.length > 0 && <button data-no-card-dblclick onClick={(e) => { e.stopPropagation(); setShowNotes((v) => !v); }} style={{ background: "transparent", border: "none", fontSize: "9px", color: "#b86e00", cursor: "pointer", fontFamily: "inherit", padding: 0 }}>💬 {notes.length}</button>}
+          {history.length > 0 && <button data-no-card-dblclick onClick={(e) => { e.stopPropagation(); setShowHistory((v) => !v); }} style={{ background: "transparent", border: "none", fontSize: "9px", color: "#1a6fba", cursor: "pointer", fontFamily: "inherit", padding: 0 }}>🕐 {history.length}</button>}
         </div>
       </div>
 
@@ -2278,7 +2344,7 @@ function DealCard({ deal, cfg, isDragging, isDeleting = false, onDragStart, onDr
   );
 }
 
-function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setReportPIC, reportSearch, reportStage, reportDealStatus, isMaster, followupConfig }) {
+function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setReportPIC, reportSearch, reportStage, reportDealStatus, isMaster, followupConfig, onDrilldown }) {
   const [rankingSort, setRankingSort] = useState({ key: "totalDeals", direction: "desc" });
   const [expandedSourceTypes, setExpandedSourceTypes] = useState({});
   const reportPicParsed = parseTeamPicFilterValue(reportPIC);
@@ -2297,6 +2363,28 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
     const n = Number(value);
     if (!Number.isFinite(n) || n === 0) return dashNode;
     return formatter ? formatter(n) : String(n);
+  };
+  const makeDrilldownCell = ({ value, dealIds, label, style = null }) => {
+    const n = Number(value);
+    const clickable = n > 0 && typeof onDrilldown === "function" && Array.isArray(dealIds) && dealIds.length > 0;
+    if (!clickable) return metricNode(value, style);
+    return (
+      <span
+        title="Double click để xem danh sách trong Pipeline"
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          onDrilldown({
+            label,
+            metric: label,
+            dealIds: [...new Set(dealIds.map((id) => String(id)))],
+            baseFilters: { reportSearch, reportStage, reportDealStatus, reportPIC, reportFrom, reportTo },
+          });
+        }}
+        style={{ ...(style || {}), cursor: "pointer", textDecoration: "underline dotted" }}
+      >
+        {n}
+      </span>
+    );
   };
   const hasInvalidRange = !!reportFrom && !!reportTo && startOfDay(reportFrom) > endOfDay(reportTo);
   const reportFromKey = normalizeDateOnly(reportFrom);
@@ -2413,14 +2501,21 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
       const leads = rangedDeals.filter((d) => d.pic === pic);
       const wins = scopedDeals.filter((d) => d.pic === pic && isWonInReportRange(d));
       const stageCounts = Object.fromEntries(pipelineColumns.map((stage) => [stage, 0]));
+      const stageDealIds = Object.fromEntries(pipelineColumns.map((stage) => [stage, []]));
       leads.forEach((deal) => {
-        if (stageCounts[deal.stage] !== undefined) stageCounts[deal.stage] += 1;
+        if (stageCounts[deal.stage] !== undefined) {
+          stageCounts[deal.stage] += 1;
+          stageDealIds[deal.stage].push(deal.id);
+        }
       });
       stageCounts.Win = wins.length;
+      stageDealIds.Win = wins.map((deal) => deal.id);
       return {
         pic,
         total: leads.length,
+        leads,
         stageCounts,
+        stageDealIds,
         overdue: leads.filter((d) => isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT)).length,
       };
     });
@@ -2594,7 +2689,7 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: "12px", width: "100%", marginBottom: "20px" }}>
-        {[{ label: "Leads mới", val: rangedDeals.length, col: "#1a6fba", icon: "➕", type: "count" }, { label: "Chuyển stage", val: movedInRange.length, col: "#b86e00", icon: "🔄", type: "count" }, { label: "Deal Win", val: wonInRange.length, col: "#1a7a45", icon: "🏆", type: "count" }, { label: "Rev. Win", val: revenueWin, col: "#0e5fa3", icon: "💰", type: "currency" }, { label: "⚠️ Đang quá hạn", val: overdueDeals.length, col: overdueDeals.length > 0 ? "#c0392b" : "#90a8c0", icon: "🚨", type: "count" }].map((c) => (
+        {[{ label: "Leads mới", val: rangedDeals.length, col: "#1a6fba", icon: "➕", type: "count", ids: rangedDeals.map((d) => d.id) }, { label: "Chuyển stage", val: movedInRange.length, col: "#b86e00", icon: "🔄", type: "count", ids: [...new Set(movedInRange.map((d) => d.id))] }, { label: "Deal Win", val: wonInRange.length, col: "#1a7a45", icon: "🏆", type: "count", ids: wonInRange.map((d) => d.id) }, { label: "Rev. Win", val: revenueWin, col: "#0e5fa3", icon: "💰", type: "currency", ids: wonInRange.map((d) => d.id) }, { label: "⚠️ Đang quá hạn", val: overdueDeals.length, col: overdueDeals.length > 0 ? "#c0392b" : "#90a8c0", icon: "🚨", type: "count", ids: overdueDeals.map((d) => d.id) }].map((c) => (
           <div key={c.label} style={{ background: "#fff", border: `1px solid ${c.label === "⚠️ Đang quá hạn" && overdueDeals.length > 0 ? "#f0a898" : "#dde6f0"}`, borderRadius: "12px", padding: "14px 16px", boxShadow: "0 1px 4px rgba(0,80,160,0.07)" }}>
             <div style={{ fontSize: "18px", marginBottom: "4px" }}>{c.icon}</div>
             <div style={{ fontSize: "22px", fontWeight: "700", color: c.col, lineHeight: 1 }}>
@@ -2602,7 +2697,7 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
                 ? dashNode
                 : c.type === "currency"
                   ? metricText(c.val, (n) => `${(n / 1e6).toFixed(0)}M₫`)
-                  : metricNode(c.val)}
+                  : makeDrilldownCell({ value: c.val, dealIds: c.ids, label: c.label })}
             </div>
             <div style={{ fontSize: "10px", color: "#90a8c0", marginTop: "4px" }}>{c.label.toUpperCase()}</div>
           </div>
@@ -2641,13 +2736,15 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
                 <tbody>{picStats.map((p, i) => (
                   <tr key={p.pic} style={{ borderBottom: "1px solid #f0f4f8", background: i % 2 === 0 ? "#fafcff" : "#fff" }}>
                     <td style={{ padding: "8px 12px", fontWeight: "700", color: "#1a6fba" }}>{p.pic}</td>
-                    <td style={{ padding: "8px 10px", textAlign: "center" }}>{metricNode(p.total)}</td>
+                    <td style={{ padding: "8px 10px", textAlign: "center" }}>{makeDrilldownCell({ value: p.total, dealIds: p.leads.map((d) => d.id), label: `${p.pic} · Tổng lead` })}</td>
                     {pipelineColumns.map((stage) => (
                       <td key={`${p.pic}-${stage}`} style={{ padding: "8px 10px", textAlign: "center", color: STAGE_CFG[stage]?.color || "#475569", fontWeight: stage === "Win" ? "700" : "600" }}>
-                        {metricNode(p.stageCounts[stage])}
+                        {makeDrilldownCell({ value: p.stageCounts[stage], dealIds: p.stageDealIds[stage], label: `${p.pic} · ${stage}` })}
                       </td>
                     ))}
-                    <td style={{ padding: "8px 10px", textAlign: "center", color: p.overdue > 0 ? "#c0392b" : "#90a8c0", fontWeight: p.overdue > 0 ? "700" : "400" }}>{p.overdue > 0 ? `⚠️ ${p.overdue}` : dashNode}</td>
+                    <td style={{ padding: "8px 10px", textAlign: "center", color: p.overdue > 0 ? "#c0392b" : "#90a8c0", fontWeight: p.overdue > 0 ? "700" : "400" }}>
+                      {p.overdue > 0 ? makeDrilldownCell({ value: p.overdue, dealIds: p.leads.filter((d) => isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT)).map((d) => d.id), label: `${p.pic} · Đang quá hạn` }) : dashNode}
+                    </td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -2703,13 +2800,13 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
                             </button>
                           </td>
                           <td style={{ textAlign: "left", padding: "8px 8px", color: "#90a8c0" }}>Tổng nhóm</td>
-                          <td style={{ textAlign: "center", padding: "8px 6px", fontWeight: "700" }}>{metricNode(row.deals.length)}</td>
-                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{metricNode(row.metrics["Data Thô"])}</td>
-                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{metricNode(row.metrics.Freeze)}</td>
-                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{metricNode(row.metrics.Cold)}</td>
-                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{metricNode(row.metrics.Warm)}</td>
-                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{metricNode(row.metrics.Hot)}</td>
-                          <td style={{ textAlign: "center", padding: "8px 6px", fontWeight: "700", color: "#1a7a45" }}>{metricNode(row.metrics.Win)}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px", fontWeight: "700" }}>{makeDrilldownCell({ value: row.deals.length, dealIds: row.deals.map((d) => d.id), label: `${row.sourceType} · Tổng lead` })}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{makeDrilldownCell({ value: row.metrics["Data Thô"], dealIds: row.deals.filter((d) => d.stage === "Data Thô").map((d) => d.id), label: `${row.sourceType} · Data Thô` })}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{makeDrilldownCell({ value: row.metrics.Freeze, dealIds: row.deals.filter((d) => d.stage === "Freeze").map((d) => d.id), label: `${row.sourceType} · Freeze` })}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{makeDrilldownCell({ value: row.metrics.Cold, dealIds: row.deals.filter((d) => d.stage === "Cold").map((d) => d.id), label: `${row.sourceType} · Cold` })}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{makeDrilldownCell({ value: row.metrics.Warm, dealIds: row.deals.filter((d) => d.stage === "Warm").map((d) => d.id), label: `${row.sourceType} · Warm` })}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px" }}>{makeDrilldownCell({ value: row.metrics.Hot, dealIds: row.deals.filter((d) => d.stage === "Hot").map((d) => d.id), label: `${row.sourceType} · Hot` })}</td>
+                          <td style={{ textAlign: "center", padding: "8px 6px", fontWeight: "700", color: "#1a7a45" }}>{makeDrilldownCell({ value: row.metrics.Win, dealIds: row.deals.filter((d) => isWonInReportRange(d)).map((d) => d.id), label: `${row.sourceType} · Win` })}</td>
                         </tr>
                       );
                       const children = expanded
@@ -2717,13 +2814,13 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
                             <tr key={`child-${row.sourceType}-${child.sourceName}`} style={{ background: "#ffffff" }}>
                               <td style={{ padding: "7px 8px 7px 24px", color: "#64748b", borderBottom: "1px solid #f1f5f9" }}>{row.sourceType}</td>
                               <td style={{ textAlign: "left", padding: "7px 8px", color: "#334155", borderBottom: "1px solid #f1f5f9" }}>{child.sourceName}</td>
-                              <td style={{ textAlign: "center", padding: "7px 6px", fontWeight: "700" }}>{metricNode(child.deals.length)}</td>
-                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{metricNode(child.metrics["Data Thô"])}</td>
-                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{metricNode(child.metrics.Freeze)}</td>
-                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{metricNode(child.metrics.Cold)}</td>
-                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{metricNode(child.metrics.Warm)}</td>
-                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{metricNode(child.metrics.Hot)}</td>
-                              <td style={{ textAlign: "center", padding: "7px 6px", color: "#1a7a45", fontWeight: "700", borderBottom: "1px solid #f1f5f9" }}>{metricNode(child.metrics.Win)}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", fontWeight: "700" }}>{makeDrilldownCell({ value: child.deals.length, dealIds: child.deals.map((d) => d.id), label: `${row.sourceType}:${child.sourceName} · Tổng lead` })}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{makeDrilldownCell({ value: child.metrics["Data Thô"], dealIds: child.deals.filter((d) => d.stage === "Data Thô").map((d) => d.id), label: `${row.sourceType}:${child.sourceName} · Data Thô` })}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{makeDrilldownCell({ value: child.metrics.Freeze, dealIds: child.deals.filter((d) => d.stage === "Freeze").map((d) => d.id), label: `${row.sourceType}:${child.sourceName} · Freeze` })}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{makeDrilldownCell({ value: child.metrics.Cold, dealIds: child.deals.filter((d) => d.stage === "Cold").map((d) => d.id), label: `${row.sourceType}:${child.sourceName} · Cold` })}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{makeDrilldownCell({ value: child.metrics.Warm, dealIds: child.deals.filter((d) => d.stage === "Warm").map((d) => d.id), label: `${row.sourceType}:${child.sourceName} · Warm` })}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", borderBottom: "1px solid #f1f5f9" }}>{makeDrilldownCell({ value: child.metrics.Hot, dealIds: child.deals.filter((d) => d.stage === "Hot").map((d) => d.id), label: `${row.sourceType}:${child.sourceName} · Hot` })}</td>
+                              <td style={{ textAlign: "center", padding: "7px 6px", color: "#1a7a45", fontWeight: "700", borderBottom: "1px solid #f1f5f9" }}>{makeDrilldownCell({ value: child.metrics.Win, dealIds: child.deals.filter((d) => isWonInReportRange(d)).map((d) => d.id), label: `${row.sourceType}:${child.sourceName} · Win` })}</td>
                             </tr>
                           ))
                         : [];
@@ -2985,7 +3082,7 @@ function Modal({ children, onClose }) {
 }
 
 function MiniBtn({ onClick, children, danger, title, disabled = false }) {
-  return <button disabled={disabled} onClick={(e) => { e.stopPropagation(); if (!disabled) onClick(); }} title={title} style={{ background: "transparent", border: "none", borderRadius: "4px", width: "20px", height: "20px", color: disabled ? "#c0cfd8" : danger ? "#c0392b" : "#90a8c0", cursor: disabled ? "not-allowed" : "pointer", fontSize: "12px", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit" }}>{children}</button>;
+  return <button data-no-card-dblclick disabled={disabled} onDoubleClick={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); if (!disabled) onClick(); }} title={title} style={{ background: "transparent", border: "none", borderRadius: "4px", width: "20px", height: "20px", color: disabled ? "#c0cfd8" : danger ? "#c0392b" : "#90a8c0", cursor: disabled ? "not-allowed" : "pointer", fontSize: "12px", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit" }}>{children}</button>;
 }
 
 function FormBlock({ title, children, highlight = false }) {
