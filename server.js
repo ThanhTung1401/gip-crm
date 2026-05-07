@@ -53,6 +53,7 @@ const PLATFORM_ALIASES = {
   other: "Khác",
   website: "Khác",
 };
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SLA_DAYS = { "Data Thô": 15, Freeze: 10, Cold: 7, Warm: 5, Hot: 3 };
 const MEETING_CADENCE = { Warm: 21, Hot: 21, Win: 30 };
 const FOLLOWUP_HOURS_DEFAULT = { "Data Thô": 100, Freeze: 72, Cold: 48, Warm: 36, Hot: 24, Win: 0 };
@@ -277,6 +278,30 @@ function normalizePlatformList(values) {
   return [...new Set(source.map((value) => normalizePlatformValue(value)).filter(Boolean))];
 }
 
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isValidEmail(value) {
+  return !value || EMAIL_REGEX.test(value);
+}
+
+function normalizeAdoValue(value) {
+  if (value === null || value === undefined) return "";
+  const text = String(value).trim();
+  if (!text) return "";
+  const normalized = text.replace(/,/g, ".");
+  return Number.isFinite(Number(normalized)) ? normalized : text;
+}
+
+function isValidAdo(value) {
+  if (value === null || value === undefined) return true;
+  const text = String(value).trim();
+  if (!text) return true;
+  const normalized = text.replace(/,/g, ".");
+  return Number.isFinite(Number(normalized));
+}
+
 function normalizeLeadSourceType(value) {
   return LEAD_SOURCE_TYPE_OPTIONS.includes(value) ? value : "";
 }
@@ -313,6 +338,8 @@ function validateDealsPayload(deals) {
     if (deal.lead_source_type !== undefined && deal.lead_source_type !== null && deal.lead_source_type !== "" && !normalizeLeadSourceType(deal.lead_source_type)) throw new Error("lead_source_type_invalid");
     if (deal.lead_source_detail !== undefined && deal.lead_source_detail !== null && deal.lead_source_detail !== "" && !normalizeLeadSourceDetail(deal.lead_source_detail)) throw new Error("lead_source_detail_invalid");
     if (deal.marketRegion !== undefined && deal.marketRegion !== null && deal.marketRegion !== "" && !normalizeMarketRegion(deal.marketRegion)) throw new Error("market_region_invalid");
+    if (!isValidEmail(normalizeEmail(deal.email))) throw new Error("email_invalid");
+    if (!isValidAdo(deal.ado)) throw new Error("ado_invalid");
   }
 }
 
@@ -740,7 +767,8 @@ function normalizeDeal(deal) {
     brand: typeof deal.brand === "string" ? deal.brand : "",
     contact: typeof deal.contact === "string" ? deal.contact : "",
     phone: typeof deal.phone === "string" ? deal.phone : "",
-    ado: deal?.ado === null || deal?.ado === undefined ? "" : String(deal.ado),
+    email: normalizeEmail(deal.email),
+    ado: normalizeAdoValue(deal?.ado),
     team: TEAM_OPTIONS.includes(deal.team) ? deal.team : "",
     platform: normalizePlatformList(Array.isArray(deal.platform) ? deal.platform.filter(Boolean) : typeof deal.platform === "string" && deal.platform ? [deal.platform] : []),
     stage: STAGES.includes(deal.stage) ? deal.stage : "Data Thô",

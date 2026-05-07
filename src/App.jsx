@@ -454,8 +454,9 @@ const resolveWonAt = (deal) => {
 const normalizeDeals = (rawDeals) =>
   Array.isArray(rawDeals)
     ? rawDeals.map((deal) => ({
-        ...deal,
-        ado: deal?.ado === null || deal?.ado === undefined ? "" : String(deal.ado),
+      ...deal,
+        email: normalizeEmail(deal?.email),
+        ado: normalizeAdoValue(deal?.ado),
         team: TEAM_OPTIONS.includes(deal?.team) ? deal.team : "",
         ...(() => {
           const legacy = parseLegacyLeadSource(deal?.lead_source || deal?.source);
@@ -659,13 +660,14 @@ const matchDealStatusFilter = (dealStatus, filterValue) => {
 const exportExcel = (deals, reportMonth) => {
   const wb = XLSX.utils.book_new();
   const ws1 = XLSX.utils.aoa_to_sheet([
-    ["Brand", "Contact", "Phone", "ADO", "Lead Source Type", "Lead Source Detail", "Source", "Platform", "Stage", "Deal Status", "PIC", "Value", "Mã KH", "Bảng giá", "Ngày nhập data", "Gặp lần cuối", "Ghi chú gần nhất", "Ngày tạo"],
+    ["Brand", "Contact", "Phone", "Email", "ADO", "Lead Source Type", "Lead Source Detail", "Source", "Platform", "Stage", "Deal Status", "PIC", "Value", "Mã KH", "Bảng giá", "Ngày nhập data", "Gặp lần cuối", "Ghi chú gần nhất", "Ngày tạo"],
     ...deals.map((d) => {
       const notes = parseNotes(d.notes);
       return [
         d.brand,
         d.contact,
         d.phone,
+        normalizeEmail(d.email),
         d.ado || "",
         d.lead_source_type || "",
         d.lead_source_detail || "",
@@ -684,7 +686,7 @@ const exportExcel = (deals, reportMonth) => {
       ];
     }),
   ]);
-  ws1["!cols"] = [18, 16, 14, 10, 14, 16, 20, 18, 12, 20, 10, 14, 12, 10, 14, 14, 30, 12].map((w) => ({ wch: w }));
+  ws1["!cols"] = [18, 16, 14, 22, 10, 14, 16, 20, 18, 12, 20, 10, 14, 12, 10, 14, 14, 30, 12].map((w) => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws1, "Tất cả Deals");
 
   const ws2 = XLSX.utils.aoa_to_sheet([
@@ -722,6 +724,23 @@ const normalizeSearchText = (value) =>
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
+const isValidEmail = (value) => !value || EMAIL_REGEX.test(value);
+const normalizeAdoValue = (value) => {
+  if (value === null || value === undefined) return "";
+  const text = String(value).trim();
+  if (!text) return "";
+  const normalized = text.replace(/,/g, ".");
+  return Number.isFinite(Number(normalized)) ? normalized : text;
+};
+const isValidAdo = (value) => {
+  if (value === null || value === undefined) return true;
+  const text = String(value).trim();
+  if (!text) return true;
+  const normalized = text.replace(/,/g, ".");
+  return Number.isFinite(Number(normalized));
+};
 
 const normalizePhoneText = (value) => String(value || "").replace(/\D/g, "");
 const normalizePlatformKey = (value) =>
@@ -755,7 +774,8 @@ const importHeaderAliases = {
   brand: ["brand", "tenbrand", "tenkhachhang", "khachhang", "customer", "company"],
   contact: ["contact", "nguoilienhe", "tennguoilienhe", "person"],
   phone: ["phone", "sodienthoai", "mobile", "telephone"],
-  ado: ["ado", "averagedailyorders", "average daily orders", "donngay", "sodonngay", "donmoingay"],
+  email: ["email", "e-mail", "mail", "gmail"],
+  ado: ["ado", "averagedailyorders", "average daily orders", "donngay", "sodonngay", "donmoingay", "sodondungay", "so don ngay"],
   platform: ["platform", "kenh", "san", "nen tang"],
   stage: ["stage", "giaidoan", "pipeline", "trangthai"],
   deal_status: ["dealstatus", "deal_status", "trangthaideal", "statusdeal"],
@@ -784,6 +804,7 @@ const getImportValue = (normalizedRow, aliases) => {
 const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFAULT_OWNER_CODES) => {
   const now = new Date().toISOString();
   let skipped = 0;
+  const errors = [];
   const importedDeals = rows.map((row, index) => {
     const normalizedRow = Object.fromEntries(
       Object.entries(row).map(([key, value]) => [normalizeImportHeader(key), value]),
@@ -795,12 +816,12 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
       return null;
     }
 
-      const rawStage = String(getImportValue(normalizedRow, importHeaderAliases.stage) || preset.stage || "Data Thô").trim();
-      const normalizedStage = normalizeSearchText(rawStage);
-      const isOldTiepCan = normalizedStage === "tiep can" || normalizedStage === "tiepcan";
-      const stage = STAGES.includes(rawStage) ? rawStage : isOldTiepCan ? "Cold" : "Data Thô";
-      const rawDealStatus = String(getImportValue(normalizedRow, importHeaderAliases.deal_status) || "").trim();
-      const deal_status = isOldTiepCan ? (DEAL_STATUS_OPTIONS.includes(rawDealStatus) ? rawDealStatus : "Đã liên hệ") : (DEAL_STATUS_OPTIONS.includes(rawDealStatus) ? rawDealStatus : "");
+    const rawStage = String(getImportValue(normalizedRow, importHeaderAliases.stage) || preset.stage || "Data Thô").trim();
+    const normalizedStage = normalizeSearchText(rawStage);
+    const isOldTiepCan = normalizedStage === "tiep can" || normalizedStage === "tiepcan";
+    const stage = STAGES.includes(rawStage) ? rawStage : isOldTiepCan ? "Cold" : "Data Thô";
+    const rawDealStatus = String(getImportValue(normalizedRow, importHeaderAliases.deal_status) || "").trim();
+    const deal_status = isOldTiepCan ? (DEAL_STATUS_OPTIONS.includes(rawDealStatus) ? rawDealStatus : "Đã liên hệ") : (DEAL_STATUS_OPTIONS.includes(rawDealStatus) ? rawDealStatus : "");
     const rawPic = String(getImportValue(normalizedRow, importHeaderAliases.pic) || preset.pic || "").trim().toUpperCase();
     const pic = ownerMode || (buildAllOwnerCodes(ownerCodes).includes(rawPic) ? rawPic : rawPic);
     const rawPlatform = getImportValue(normalizedRow, importHeaderAliases.platform);
@@ -820,13 +841,28 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
     const noteText = String(getImportValue(normalizedRow, importHeaderAliases.notes) || "").trim();
     const dataInputDate = parseExcelDateToISO(getImportValue(normalizedRow, importHeaderAliases.dataInputDate)) || now;
     const marketRegion = normalizeMarketRegion(String(getImportValue(normalizedRow, importHeaderAliases.marketRegion) || "").trim());
+    const email = normalizeEmail(getImportValue(normalizedRow, importHeaderAliases.email));
+    const adoRaw = String(getImportValue(normalizedRow, importHeaderAliases.ado) || "").trim();
+    const ado = normalizeAdoValue(adoRaw);
+    const rowNumber = index + 2;
+    if (!isValidEmail(email)) {
+      errors.push(`Row ${rowNumber}: EMAIL không đúng định dạng`);
+      skipped += 1;
+      return null;
+    }
+    if (!isValidAdo(ado)) {
+      errors.push(`Row ${rowNumber}: ADO phải là số`);
+      skipped += 1;
+      return null;
+    }
 
     return {
       id: `${Date.now()}_${index}_${Math.random().toString(36).slice(2, 8)}`,
       brand,
       contact: String(getImportValue(normalizedRow, importHeaderAliases.contact) || "").trim(),
       phone: String(getImportValue(normalizedRow, importHeaderAliases.phone) || "").trim(),
-      ado: String(getImportValue(normalizedRow, importHeaderAliases.ado) || "").trim(),
+      email,
+      ado,
       platform,
       stage,
       deal_status,
@@ -848,26 +884,26 @@ const buildImportedDeals = (rows, preset = {}, ownerMode = "", ownerCodes = DEFA
     };
   }).filter(Boolean);
 
-  return { importedDeals, skipped };
+  return { importedDeals, skipped, errors };
 };
 
 const exportImportTemplate = () => {
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet([
-    ["Brand", "Contact", "Phone", "ADO", "Lead Source Type", "Lead Source Detail", "Source", "Platform", "DataInputDate", "PIC", "Stage", "Deal Status", "Value", "MaKH", "BangGia", "Thị trường", "Notes"],
-    ["Cafune", "Linh", "0901234567", "120", "Cá nhân", "Facebook", "Cá nhân - Facebook", "Facebook, Shopee", "14/04/2026", "GIP01", "Data Thô", "New Lead", "50000000", "", "", "Philippines", "Khách mới, cần gọi tư vấn"],
+    ["BRAND", "CONTACT_NAME", "PHONE", "EMAIL", "SOURCE_TYPE", "SOURCE_DETAIL", "PLATFORM", "MARKET", "PIC", "TEAM", "STAGE", "STATUS", "ADO", "ESTIMATED_VALUE", "NOTE", "DATA_DATE"],
+    ["Cafune", "Linh", "0901234567", "linh@example.com", "Cá nhân", "Facebook", "Facebook, Shopee", "Philippines", "GIP01", "PKD1", "Data Thô", "New Lead", "120", "50000000", "Khách mới, cần gọi tư vấn", "14/04/2026"],
   ]);
-  ws["!cols"] = [18, 16, 14, 10, 16, 16, 20, 20, 14, 10, 12, 20, 14, 12, 12, 14, 30].map((w) => ({ wch: w }));
+  ws["!cols"] = [18, 16, 14, 22, 16, 16, 20, 14, 10, 10, 12, 20, 10, 14, 30, 14].map((w) => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, "Mau Import");
 
   const guide = XLSX.utils.aoa_to_sheet([
     ["Huong dan"],
     ["1. Giữ nguyên hàng tiêu đề ở sheet Mẫu Import"],
     ["2. Date dùng dd/mm/yyyy hoặc yyyy-mm-dd"],
-    ["3. ADO = so don trung binh moi ngay"],
-    [`4. Lead Source Type hợp lệ: ${LEAD_SOURCE_TYPE_OPTIONS.join(", ")}`],
-    [`5. Lead Source Detail hợp lệ: ${LEAD_SOURCE_DETAIL_OPTIONS.join(", ")}`],
-    ["6. Nếu chỉ có cột Source/Nguồn khách, hệ thống sẽ tự tách format 'Loại - Chi tiết'"],
+    ["3. EMAIL là tùy chọn nhưng nếu có phải đúng định dạng"],
+    ["4. ADO = so don trung binh moi ngay (chi nhap so)"],
+    [`5. Lead Source Type hợp lệ: ${LEAD_SOURCE_TYPE_OPTIONS.join(", ")}`],
+    [`6. Lead Source Detail hợp lệ: ${LEAD_SOURCE_DETAIL_OPTIONS.join(", ")}`],
     [`7. Platform hợp lệ: ${PLATFORMS.join(", ")}. Có thể nhập nhiều giá trị, ngăn cách bằng dấu phẩy`],
     ["8. Stage hợp lệ: Data Thô, Freeze, Cold, Warm, Hot, Win"],
     [`9. Deal Status hợp lệ: ${DEAL_STATUS_OPTIONS.join(", ")}`],
@@ -1221,9 +1257,10 @@ export default function App() {
   };
 
   const importDeals = async (rows, preset = {}) => {
-    const { importedDeals, skipped } = buildImportedDeals(rows, preset, ownerMode, ownerCodes);
+    const { importedDeals, skipped, errors } = buildImportedDeals(rows, preset, ownerMode, ownerCodes);
     if (!importedDeals.length) {
-      window.alert("Khong co dong hop le de import. Can it nhat cot Brand.");
+      const reason = errors?.length ? `\n${errors.slice(0, 10).join("\n")}` : "";
+      window.alert(`Khong co dong hop le de import. Can it nhat cot Brand.${reason}`);
       return;
     }
     const incomingDeals = importedDeals.map((deal) => applyAccessDefaultsToDeal(deal));
@@ -1263,7 +1300,9 @@ export default function App() {
       setBackendReady(true);
       setShowImportModal(false);
       setShowAddOptions(false);
-      window.alert(`Da import ${incomingDeals.length} deal${skipped ? `, bo qua ${skipped} dong khong hop le` : ""}.`);
+      const skippedMsg = skipped ? `, bo qua ${skipped} dong khong hop le` : "";
+      const errorMsg = errors?.length ? `\nChi tiet loi:\n${errors.slice(0, 10).join("\n")}${errors.length > 10 ? `\n... va ${errors.length - 10} loi khac` : ""}` : "";
+      window.alert(`Da import ${incomingDeals.length} deal${skippedMsg}.${errorMsg}`);
     } catch (error) {
       setBackendReady(false);
       try {
@@ -1714,6 +1753,7 @@ export default function App() {
       !searchText ||
       normalizeSearchText(d.brand).includes(searchText) ||
       normalizeSearchText(d.contact).includes(searchText) ||
+      normalizeSearchText(d.email).includes(searchText) ||
       (searchPhone && normalizePhoneText(d.phone).includes(searchPhone));
     const mst = !filterStage || d.stage === filterStage;
     const mds = matchDealStatusFilter(d.deal_status, filterDealStatus);
@@ -1731,6 +1771,7 @@ export default function App() {
       !searchText ||
       normalizeSearchText(d.brand).includes(searchText) ||
       normalizeSearchText(d.contact).includes(searchText) ||
+      normalizeSearchText(d.email).includes(searchText) ||
       (searchPhone && normalizePhoneText(d.phone).includes(searchPhone));
     const mst = !filterStage || d.stage === filterStage;
     const mds = matchDealStatusFilter(d.deal_status, filterDealStatus);
@@ -1747,6 +1788,7 @@ export default function App() {
       !reportSearchText ||
       normalizeSearchText(d.brand).includes(reportSearchText) ||
       normalizeSearchText(d.contact).includes(reportSearchText) ||
+      normalizeSearchText(d.email).includes(reportSearchText) ||
       (reportSearchPhone && normalizePhoneText(d.phone).includes(reportSearchPhone));
     const mst = !reportStage || d.stage === reportStage;
     const mds = matchDealStatusFilter(d.deal_status, reportDealStatus);
@@ -1931,7 +1973,7 @@ export default function App() {
               {(tab === "pipeline" || tab === "alerts") && (
                 <div className="pipeline-toolbar">
                   <div className="pipeline-toolbar-main">
-                    <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm theo brand, contact, phone..." style={{ ...dropdownStyle(search), width: "280px", minHeight: "38px" }} />
+                    <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm theo brand, contact, phone, email..." style={{ ...dropdownStyle(search), width: "280px", minHeight: "38px" }} />
                     <select value={filterStage} onChange={(e) => setFilterStage(e.target.value)} style={{ ...dropdownStyle(filterStage), width: "150px", minHeight: "38px" }}>
                       <option value="">Tất cả giai đoạn</option>
                       {STAGES.map((stage) => <option key={stage} value={stage}>{stage}</option>)}
@@ -1991,7 +2033,7 @@ export default function App() {
               {tab === "report" && (
                 <div className="pipeline-toolbar">
                   <div className="pipeline-toolbar-main">
-                    <input value={reportSearch} onChange={(e) => setReportSearch(e.target.value)} placeholder="Tìm theo brand, contact, phone..." style={{ ...dropdownStyle(reportSearch), width: "280px", minHeight: "38px" }} />
+                    <input value={reportSearch} onChange={(e) => setReportSearch(e.target.value)} placeholder="Tìm theo brand, contact, phone, email..." style={{ ...dropdownStyle(reportSearch), width: "280px", minHeight: "38px" }} />
                     <select value={reportStage} onChange={(e) => setReportStage(e.target.value)} style={{ ...dropdownStyle(reportStage), width: "150px", minHeight: "38px" }}>
                       <option value="">Tất cả giai đoạn</option>
                       {STAGES.map((stage) => <option key={stage} value={stage}>{stage}</option>)}
@@ -2175,6 +2217,7 @@ function DealCard({ deal, cfg, isDragging, isDeleting = false, onDragStart, onDr
       </div>
       {deal.contact && <div title={deal.contact} style={{ fontSize: "10px", color: "#6080a0", marginTop: "6px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>👤 {deal.contact}</div>}
       {deal.phone && <div style={{ fontSize: "10px", color: "#6080a0", marginTop: "2px" }}>📞 {deal.phone}</div>}
+      {deal.email && <div style={{ fontSize: "10px", color: "#6080a0", marginTop: "2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>✉️ {deal.email}</div>}
       {deal.maKH && <div style={{ fontSize: "10px", color: "#1a7a45", marginTop: "2px", fontWeight: "600" }}>🆔 {deal.maKH}</div>}
       {deal.bangGia && <div style={{ fontSize: "10px", color: "#1a7a45", marginTop: "1px" }}>💼 {deal.bangGia}</div>}
 
@@ -2275,6 +2318,7 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
       !searchText ||
       normalizeSearchText(d.brand).includes(searchText) ||
       normalizeSearchText(d.contact).includes(searchText) ||
+      normalizeSearchText(d.email).includes(searchText) ||
       (searchPhone && normalizePhoneText(d.phone).includes(searchPhone));
     const mst = !reportStage || d.stage === reportStage;
     const mds = matchDealStatusFilter(d.deal_status, reportDealStatus);
@@ -2352,7 +2396,19 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
   });
 
   const pipelineColumns = [...STAGES];
-  const picStats = ownerCodes
+  const scopedPicFromDeals = [...new Set(scopedDeals.map((deal) => String(deal.pic || "").trim()).filter(Boolean))];
+  const visiblePicCodes = (() => {
+    if (reportPicParsed.type === "pic") {
+      return reportPicParsed.key ? [reportPicParsed.key] : [];
+    }
+    if (reportPicParsed.type === "team") {
+      const teamPics = [...new Set(scopedDeals.filter((deal) => String(deal.team || "") === reportPicParsed.key).map((deal) => String(deal.pic || "").trim()).filter(Boolean))];
+      return teamPics;
+    }
+    const merged = [...new Set([...ownerCodes, ...scopedPicFromDeals].map((pic) => String(pic || "").trim()).filter(Boolean))];
+    return merged;
+  })();
+  const picStats = visiblePicCodes
     .map((pic) => {
       const leads = rangedDeals.filter((d) => d.pic === pic);
       const wins = scopedDeals.filter((d) => d.pic === pic && isWonInReportRange(d));
@@ -2367,8 +2423,12 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
         stageCounts,
         overdue: leads.filter((d) => isDealCurrentlyOverdue(d, followupConfig || FOLLOWUP_HOURS_DEFAULT)).length,
       };
-    })
-    .filter((p) => p.total > 0 || p.stageCounts.Win > 0 || p.overdue > 0);
+    });
+  const shouldShowPicPerformance = !hasInvalidRange && (
+    picStats.length > 0
+    || reportPicParsed.type === "pic"
+    || reportPicParsed.type === "team"
+  );
 
   const stageCounts = Object.fromEntries(STAGES.map((stage) => [stage, rangedDeals.filter((d) => d.stage === stage).length]));
   const maxStageCount = Math.max(...Object.values(stageCounts), 1);
@@ -2556,9 +2616,14 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: "16px", width: "100%" }}>
-        {reportPIC === "all" && isMaster && picStats.length > 0 && !hasInvalidRange && (
+        {shouldShowPicPerformance && (
           <div style={{ background: "#fff", border: "1px solid #dde6f0", borderRadius: "12px", padding: "16px", gridColumn: "1/-1" }}>
-            <div style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "13px", marginBottom: "14px" }}>👤 Hiệu suất PIC — {rangeLabel}</div>
+            <div style={{ fontWeight: "700", color: "#1a2a3a", fontSize: "13px", marginBottom: "6px" }}>👤 Hiệu suất PIC — {rangeLabel}</div>
+            {reportPicParsed.type !== "all" && (
+              <div style={{ fontSize: "12px", color: "#6080a0", marginBottom: "10px" }}>
+                Phạm vi: {reportScopeLabel}
+              </div>
+            )}
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
                 <thead>
@@ -3030,7 +3095,7 @@ function ImportDealsModal({ preset, ownerMode, onDownloadTemplate, onImport, onC
       const rows = XLSX.utils.sheet_to_json(firstSheet, { defval: "" });
       onImport(rows, preset);
     } catch {
-      window.alert("Khong doc duoc file Excel. Hay kiem tra dung dinh dang .xlsx hoac .xls.");
+      window.alert("Khong doc duoc file. Hay kiem tra dung dinh dang .xlsx, .xls hoac .csv.");
     } finally {
       setLoading(false);
     }
@@ -3051,7 +3116,7 @@ function ImportDealsModal({ preset, ownerMode, onDownloadTemplate, onImport, onC
 
         <div style={{ background: "#fff", border: "1px solid #dde6f0", borderRadius: "12px", padding: "14px" }}>
           <div style={{ fontSize: "12px", color: "#1a2a3a", fontWeight: "700", marginBottom: "8px" }}>Buoc 2: Chon file da dien du lieu</div>
-          <input type="file" accept=".xlsx,.xls" onChange={(e) => setFile(e.target.files?.[0] || null)} style={{ fontFamily: "inherit", fontSize: "12px" }} />
+          <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setFile(e.target.files?.[0] || null)} style={{ fontFamily: "inherit", fontSize: "12px" }} />
           {file && <div style={{ fontSize: "12px", color: "#6080a0", marginTop: "8px" }}>Da chon: {file.name}</div>}
         </div>
 
@@ -3068,7 +3133,7 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
   const isNew = !deal.id;
   const initDate = deal.dataInputDate ? toDisplayDate(deal.dataInputDate) : isNew ? toDisplayDate(new Date().toISOString()) : "";
   const sourceLegacy = parseLegacyLeadSource(deal?.lead_source || deal?.source);
-  const [f, setF] = useState({ brand: "", contact: "", phone: "", ado: "", team: currentRole === DEFAULT_MASTER_ROLE ? "" : currentTeam, platform: [], stage: "Data Thô", pic: ownerMode || "", lead_source_type: sourceLegacy.lead_source_type, lead_source_detail: sourceLegacy.lead_source_detail, source: sourceLegacy.source, lead_source: sourceLegacy.source, value: "", maKH: "", bangGia: "", marketRegion: "", ...deal, deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "", notes: parseNotes(deal.notes) });
+  const [f, setF] = useState({ brand: "", contact: "", phone: "", email: "", ado: "", team: currentRole === DEFAULT_MASTER_ROLE ? "" : currentTeam, platform: [], stage: "Data Thô", pic: ownerMode || "", lead_source_type: sourceLegacy.lead_source_type, lead_source_detail: sourceLegacy.lead_source_detail, source: sourceLegacy.source, lead_source: sourceLegacy.source, value: "", maKH: "", bangGia: "", marketRegion: "", ...deal, deal_status: DEAL_STATUS_OPTIONS.includes(deal?.deal_status) ? deal.deal_status : "", notes: parseNotes(deal.notes) });
   const [dateInput, setDateInput] = useState(initDate);
   const [newNote, setNewNote] = useState("");
   const [saving, setSaving] = useState(false);
@@ -3092,9 +3157,13 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
     const lead_source_type = normalizeLeadSourceType(f.lead_source_type);
     const lead_source_detail = normalizeLeadSourceDetail(f.lead_source_detail);
     const marketRegion = normalizeMarketRegion(f.marketRegion);
+    const email = normalizeEmail(f.email);
+    if (!isValidEmail(email)) return window.alert("EMAIL không đúng định dạng.");
+    if (!isValidAdo(f.ado)) return window.alert("ADO phải là số.");
+    const ado = normalizeAdoValue(f.ado);
     const source = buildLeadSource(lead_source_type, lead_source_detail) || String(f.source || "").trim();
     setSaving(true);
-    const result = await onSave({ ...f, lead_source_type, lead_source_detail, marketRegion, lead_source: source, source, dataInputDate: isoDate, lastMeeting: "" });
+    const result = await onSave({ ...f, email, ado, lead_source_type, lead_source_detail, marketRegion, lead_source: source, source, dataInputDate: isoDate, lastMeeting: "" });
     setSaving(false);
     if (!result?.ok) {
       window.alert(result?.error || "Lưu không thành công, vui lòng thử lại.");
@@ -3111,7 +3180,7 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
               <Field label="Tên Brand" span><Inp value={f.brand} onChange={(v) => s("brand", v)} placeholder="Ví dụ: Cafuné, Owen..." /></Field>
               <Field label="Người liên hệ"><Inp value={f.contact} onChange={(v) => s("contact", v)} placeholder="Tên người phụ trách" /></Field>
               <Field label="Số điện thoại"><Inp value={f.phone} onChange={(v) => s("phone", v)} placeholder="0901..." /></Field>
-              <Field label="ADO"><Inp value={f.ado || ""} onChange={(v) => s("ado", v)} placeholder="Số đơn/ngày" type="number" /></Field>
+              <Field label="EMAIL"><Inp value={f.email || ""} onChange={(v) => s("email", normalizeEmail(v))} placeholder="example@gmail.com" /></Field>
               <Field label="Loại nguồn">
                 <select
                   value={f.lead_source_type || ""}
@@ -3200,6 +3269,9 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
               </Field>
               <Field label="Giá trị dự kiến (VND)">
                 <Inp value={f.value} onChange={(v) => s("value", v)} placeholder="50000000" type="number" />
+              </Field>
+              <Field label="ADO (Số đơn/ngày)">
+                <Inp value={f.ado || ""} onChange={(v) => s("ado", v)} placeholder="120" type="number" />
               </Field>
               {isWin && (
                 <>
