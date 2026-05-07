@@ -54,7 +54,7 @@ const PLATFORM_ALIASES = {
 const SLA_DAYS = { "Data Thô": 15, Freeze: 10, Cold: 7, Warm: 5, Hot: 3 };
 const MEETING_CADENCE = { Warm: 21, Hot: 21, Win: 30 };
 const FOLLOWUP_HOURS_DEFAULT = { "Data Thô": 100, Freeze: 72, Cold: 48, Warm: 36, Hot: 24, Win: 0 };
-const ALERT_REPEAT_HOURS = 6;
+const ALERT_REPEAT_HOURS = 2;
 const AUTO_BACKUP_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_BACKUP_FILES = 24;
 const ENABLE_LOCAL_BACKUP = String(process.env.ENABLE_LOCAL_BACKUP || "true").toLowerCase() !== "false";
@@ -560,6 +560,7 @@ function makeDefaultState() {
     telegramConfig: Object.fromEntries(buildAllOwnerCodes(ownerCodes).map((pic) => [pic, { botToken: "", chatId: "" }])),
     followupConfig: { ...FOLLOWUP_HOURS_DEFAULT },
     alertLog: {},
+    sentAlerts: {},
     updatedAt: new Date().toISOString(),
   };
 }
@@ -617,6 +618,7 @@ function normalizeState(raw, options = {}) {
     if (Number.isFinite(value) && value >= 0) followupConfig[stage] = value;
   });
   const alertLog = raw?.alertLog && typeof raw.alertLog === "object" ? raw.alertLog : {};
+  const sentAlerts = raw?.sentAlerts && typeof raw.sentAlerts === "object" ? raw.sentAlerts : {};
   deals = deals.map((deal) => {
     const stageRaw = String(deal.stage || "").trim();
     const stageAscii = stageRaw
@@ -643,6 +645,7 @@ function normalizeState(raw, options = {}) {
     telegramConfig,
     followupConfig,
     alertLog,
+    sentAlerts,
     updatedAt: typeof raw?.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
   };
 }
@@ -829,28 +832,83 @@ function buildAlerts(state) {
     const followup = getFollowupStatus(deal, state.followupConfig);
     if (sla?.type === "overdue") {
       entries.push({
-        key: `${deal.pic}:${deal.id}:sla`,
+        key: `${deal.id}:sla:${deal.pic}`,
+        dealId: deal.id,
         owner: deal.pic,
         type: "sla",
-        signature: `${deal.stage}:${sla.days}:${sla.limit}`,
+        stage: deal.stage,
+        dealStatus: deal.deal_status || "",
+        stateToken: String(deal.updatedAt || ""),
         text: `⚠️ SLA QUA HAN: *${deal.brand || "Khong ten"}* dang o ${deal.stage} da ${sla.days} ngay (max ${sla.limit}n)`,
       });
     }
     if (meeting?.type === "overdue") {
       entries.push({
-        key: `${deal.pic}:${deal.id}:meeting`,
+        key: `${deal.id}:meeting:${deal.pic}`,
+        dealId: deal.id,
         owner: deal.pic,
         type: "meeting",
-        signature: `${deal.stage}:${meeting.days}:${meeting.limit}`,
+        stage: deal.stage,
+        dealStatus: deal.deal_status || "",
+        stateToken: String(deal.updatedAt || ""),
         text: `📅 GAP KH: *${deal.brand || "Khong ten"}* (${deal.stage}) da ${meeting.days} ngay chua gap (can gap moi ${meeting.limit}n)`,
       });
     }
     if (followup?.type === "overdue") {
       entries.push({
-        key: `${deal.pic}:${deal.id}:followup`,
+        key: `${deal.id}:followup:${deal.pic}`,
+        dealId: deal.id,
         owner: deal.pic,
         type: "followup",
-        signature: `${deal.stage}:${followup.hours}:${followup.limit}`,
+        stage: deal.stage,
+        dealStatus: deal.deal_status || "",
+        stateToken: String(deal.updatedAt || ""),
+        text: `📝 CHUA CO NOTE: *${deal.brand || "Khong ten"}* (${deal.stage}) da ${followup.hours}h chua duoc cap nhat ghi chu (max ${followup.limit}h)`,
+      });
+    }
+  }
+  return entries;
+}
+
+function buildAlertsV2(state) {
+  const entries = [];
+  for (const deal of state.deals) {
+    const sla = getSlaStatus(deal);
+    const meeting = getMeetingStatus(deal);
+    const followup = getFollowupStatus(deal, state.followupConfig);
+    if (sla?.type === "overdue") {
+      entries.push({
+        key: `${deal.id}:sla:${deal.pic}`,
+        dealId: deal.id,
+        owner: deal.pic,
+        type: "sla",
+        stage: deal.stage,
+        dealStatus: deal.deal_status || "",
+        stateToken: String(deal.updatedAt || ""),
+        text: `⚠️ SLA QUA HAN: *${deal.brand || "Khong ten"}* dang o ${deal.stage} da ${sla.days} ngay (max ${sla.limit}n)`,
+      });
+    }
+    if (meeting?.type === "overdue") {
+      entries.push({
+        key: `${deal.id}:meeting:${deal.pic}`,
+        dealId: deal.id,
+        owner: deal.pic,
+        type: "meeting",
+        stage: deal.stage,
+        dealStatus: deal.deal_status || "",
+        stateToken: String(deal.updatedAt || ""),
+        text: `📅 GAP KH: *${deal.brand || "Khong ten"}* (${deal.stage}) da ${meeting.days} ngay chua gap (can gap moi ${meeting.limit}n)`,
+      });
+    }
+    if (followup?.type === "overdue") {
+      entries.push({
+        key: `${deal.id}:followup:${deal.pic}`,
+        dealId: deal.id,
+        owner: deal.pic,
+        type: "followup",
+        stage: deal.stage,
+        dealStatus: deal.deal_status || "",
+        stateToken: String(deal.updatedAt || ""),
         text: `📝 CHUA CO NOTE: *${deal.brand || "Khong ten"}* (${deal.stage}) da ${followup.hours}h chua duoc cap nhat ghi chu (max ${followup.limit}h)`,
       });
     }
@@ -902,6 +960,80 @@ async function scanAndNotify() {
   }
 
   state.alertLog = nextLog;
+  saveState(state);
+  return { sent, totalAlerts: alerts.length };
+}
+
+async function scanAndNotifyV2() {
+  const state = loadState();
+  const alerts = buildAlertsV2(state);
+  const nextSentAlerts = { ...(state.sentAlerts || {}) };
+  const activeKeys = new Set(alerts.map((alert) => alert.key));
+  const dueByOwner = {};
+  const now = Date.now();
+  const repeatMs = ALERT_REPEAT_HOURS * 3600000;
+
+  alerts.forEach((alert) => {
+    const previous = state.sentAlerts?.[alert.key];
+    const lastSentAtMs = previous?.lastSentAt ? new Date(previous.lastSentAt).getTime() : 0;
+    const changedByUpdate = !!previous && previous.stateToken !== alert.stateToken;
+    const passedCooldown = !!previous && Number.isFinite(lastSentAtMs) && now - lastSentAtMs >= repeatMs;
+    const shouldSend = !previous || changedByUpdate || passedCooldown;
+    if (!shouldSend) {
+      console.info("[telegram-alert] skip", {
+        alertKey: alert.key,
+        reason: "cooldown_active",
+        owner: alert.owner,
+        dealId: alert.dealId,
+        type: alert.type,
+        lastSentAt: previous?.lastSentAt || null,
+      });
+      return;
+    }
+    if (!dueByOwner[alert.owner]) dueByOwner[alert.owner] = [];
+    dueByOwner[alert.owner].push(alert);
+  });
+
+  const sent = [];
+  for (const [owner, ownerAlerts] of Object.entries(dueByOwner)) {
+    const cfg = state.telegramConfig?.[owner];
+    if (!cfg?.botToken || !cfg?.chatId || !ownerAlerts.length) continue;
+    const text = `🔔 *GIP Pipeline Alert* - ${owner}\n\n${ownerAlerts.map((item) => item.text).join("\n\n")}`;
+    await sendTelegram(cfg.botToken, cfg.chatId, text);
+    const sentAt = new Date().toISOString();
+    ownerAlerts.forEach((alert) => {
+      const previous = state.sentAlerts?.[alert.key];
+      const mode = !previous ? "first_send" : previous.stateToken !== alert.stateToken ? "resolved_then_realert" : "resend_after_cooldown";
+      nextSentAlerts[alert.key] = {
+        alertKey: alert.key,
+        dealId: alert.dealId,
+        owner: alert.owner,
+        alertType: alert.type,
+        stage: alert.stage,
+        dealStatus: alert.dealStatus,
+        stateToken: alert.stateToken,
+        sentAt,
+        lastSentAt: sentAt,
+      };
+      console.info("[telegram-alert] sent", {
+        alertKey: alert.key,
+        mode,
+        owner: alert.owner,
+        dealId: alert.dealId,
+        type: alert.type,
+      });
+    });
+    sent.push({ owner, count: ownerAlerts.length });
+  }
+
+  Object.keys(nextSentAlerts).forEach((key) => {
+    if (activeKeys.has(key)) return;
+    console.info("[telegram-alert] resolved", { alertKey: key, reason: "not_active" });
+    delete nextSentAlerts[key];
+  });
+
+  state.sentAlerts = nextSentAlerts;
+  state.alertLog = state.alertLog || {};
   saveState(state);
   return { sent, totalAlerts: alerts.length };
 }
@@ -1051,6 +1183,7 @@ async function route(req, res) {
       telegramConfig: mergedTelegramConfig,
       followupConfig: access.role === MASTER_ROLE && body.followupConfig ? body.followupConfig : current.followupConfig,
       alertLog: current.alertLog || {},
+      sentAlerts: current.sentAlerts || {},
     });
     console.info("[state] write_success", {
       actorOwner,
@@ -1127,7 +1260,7 @@ async function route(req, res) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/scan") {
-    const result = await scanAndNotify();
+    const result = await scanAndNotifyV2();
     sendJson(res, 200, { ok: true, ...result });
     return;
   }
@@ -1160,7 +1293,7 @@ createServer((req, res) => {
 });
 
 setInterval(() => {
-  scanAndNotify().catch((error) => {
+  scanAndNotifyV2().catch((error) => {
     console.error("scan_failed", error);
   });
 }, 60_000);
