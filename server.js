@@ -56,6 +56,7 @@ const SLA_DAYS = { "Data Thô": 15, Freeze: 10, Cold: 7, Warm: 5, Hot: 3 };
 const MEETING_CADENCE = { Warm: 21, Hot: 21, Win: 30 };
 const FOLLOWUP_HOURS_DEFAULT = { "Data Thô": 100, Freeze: 72, Cold: 48, Warm: 36, Hot: 24, Win: 0 };
 const ALERT_REPEAT_HOURS = 2;
+const TELEGRAM_MAX_MESSAGE_LENGTH = 3500;
 const AUTO_BACKUP_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_BACKUP_FILES = 24;
 const ENABLE_LOCAL_BACKUP = String(process.env.ENABLE_LOCAL_BACKUP || "true").toLowerCase() !== "false";
@@ -903,9 +904,14 @@ function buildAlertsV2(state) {
         dealId: deal.id,
         owner: deal.pic,
         alertType: "overdue_stage",
+        brand: deal.brand || "Khong ten",
         stage: deal.stage,
         dealStatus: deal.deal_status || "",
         stateToken: String(deal.updatedAt || ""),
+        metricValue: sla.days,
+        metricLimit: sla.limit,
+        metricUnit: "ngay",
+        reason: `Qua han stage ${deal.stage}`,
         text: `⚠️ SLA QUA HAN: *${deal.brand || "Khong ten"}* dang o ${deal.stage} da ${sla.days} ngay (max ${sla.limit}n)`,
       });
     }
@@ -915,9 +921,14 @@ function buildAlertsV2(state) {
         dealId: deal.id,
         owner: deal.pic,
         alertType: "overdue_meeting",
+        brand: deal.brand || "Khong ten",
         stage: deal.stage,
         dealStatus: deal.deal_status || "",
         stateToken: String(deal.updatedAt || ""),
+        metricValue: meeting.days,
+        metricLimit: meeting.limit,
+        metricUnit: "ngay",
+        reason: "Qua han gap khach",
         text: `📅 GAP KH: *${deal.brand || "Khong ten"}* (${deal.stage}) da ${meeting.days} ngay chua gap (can gap moi ${meeting.limit}n)`,
       });
     }
@@ -927,14 +938,93 @@ function buildAlertsV2(state) {
         dealId: deal.id,
         owner: deal.pic,
         alertType: "missing_note",
+        brand: deal.brand || "Khong ten",
         stage: deal.stage,
         dealStatus: deal.deal_status || "",
         stateToken: String(deal.updatedAt || ""),
+        metricValue: followup.hours,
+        metricLimit: followup.limit,
+        metricUnit: "h",
+        reason: "Chua co ghi chu moi",
         text: `📝 CHUA CO NOTE: *${deal.brand || "Khong ten"}* (${deal.stage}) da ${followup.hours}h chua duoc cap nhat ghi chu (max ${followup.limit}h)`,
       });
     }
   }
   return entries;
+}
+
+function truncateText(value, maxLen) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, Math.max(0, maxLen - 3))}...`;
+}
+
+function formatAlertItemText(alert) {
+  const brand = truncateText(alert.brand || "Khong ten", 80);
+  const stage = truncateText(alert.stage || "-", 24);
+  const reason = truncateText(alert.reason || alert.text || "-", 160);
+  const unit = alert.metricUnit || "";
+  const value = Number(alert.metricValue);
+  const limit = Number(alert.metricLimit);
+  const overdueLine = Number.isFinite(value) && Number.isFinite(limit)
+    ? `Qua han: ${value}${unit} / SLA ${limit}${unit}`
+    : "";
+  return [
+    `KH: ${brand}`,
+    `Stage: ${stage}`,
+    `Loi: ${reason}`,
+    overdueLine,
+  ].filter(Boolean).join("\n");
+}
+
+function chunkTelegramMessages(owner, alerts) {
+  const header = `🔔 GIP Pipeline Alert - ${owner}\n\n`;
+  const chunks = [];
+  let current = header;
+  for (const alert of alerts) {
+    let block = `${formatAlertItemText(alert)}\n\n`;
+    if (block.length > 600) block = `${truncateText(block, 600)}\n`;
+    if ((current + block).length > TELEGRAM_MAX_MESSAGE_LENGTH) {
+      if (current !== header) {
+        chunks.push(current.trim());
+        current = header;
+      }
+      if ((current + block).length > TELEGRAM_MAX_MESSAGE_LENGTH) {
+        const remain = TELEGRAM_MAX_MESSAGE_LENGTH - current.length - 80;
+        current += `${truncateText(block, Math.max(120, remain))}\n... Noi dung da duoc rut gon. Mo CRM de xem chi tiet.`;
+        chunks.push(current.trim());
+        current = header;
+      } else {
+        current += block;
+      }
+    } else {
+      current += block;
+    }
+  }
+  if (current !== header) chunks.push(current.trim());
+  return chunks;
+}
+
+async function sendOwnerAlertBatches(owner, cfg, ownerAlerts) {
+  const messages = chunkTelegramMessages(owner, ownerAlerts);
+  let sentMessageCount = 0;
+  for (const msg of messages) {
+    let telegramOk = false;
+    try {
+      const telegramResp = await sendTelegram(cfg.botToken, cfg.chatId, msg);
+      telegramOk = !!telegramResp?.ok;
+    } catch (error) {
+      console.error("[telegram-alert] send_failed", {
+        owner,
+        error: error?.message || "telegram_send_failed",
+        length: String(msg || "").length,
+      });
+    }
+    if (!telegramOk) continue;
+    sentMessageCount += 1;
+  }
+  return { ok: sentMessageCount > 0, sentMessageCount };
 }
 
 async function sendTelegram(botToken, chatId, text) {
@@ -1031,14 +1121,8 @@ async function scanAndNotifyV2() {
     const cfg = state.telegramConfig?.[owner];
     if (!cfg?.botToken || !cfg?.chatId || !ownerAlerts.length) continue;
     const text = `🔔 *GIP Pipeline Alert* - ${owner}\n\n${ownerAlerts.map((item) => item.text).join("\n\n")}`;
-    let telegramOk = false;
-    try {
-      const telegramResp = await sendTelegram(cfg.botToken, cfg.chatId, text);
-      telegramOk = !!telegramResp?.ok;
-    } catch (error) {
-      console.error("[telegram-alert] send_failed", { owner, error: error?.message || "telegram_send_failed" });
-    }
-    if (!telegramOk) continue;
+    const sendResult = await sendOwnerAlertBatches(owner, cfg, ownerAlerts);
+    if (!sendResult.ok) continue;
     const sentAt = new Date().toISOString();
     ownerAlerts.forEach((alert) => {
       const previous = nextSentAlerts[alert.key];
@@ -1062,7 +1146,7 @@ async function scanAndNotifyV2() {
         alertType: alert.alertType,
       });
     });
-    sent.push({ owner, count: ownerAlerts.length });
+    sent.push({ owner, count: ownerAlerts.length, messages: sendResult.sentMessageCount });
   }
 
   Object.keys(nextSentAlerts).forEach((key) => {
