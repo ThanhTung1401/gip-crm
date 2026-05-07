@@ -11,6 +11,7 @@ const DIST_DIR = resolve(__dirname, "dist");
 const INDEX_FILE = join(DIST_DIR, "index.html");
 const DATA_DIR = resolve(__dirname, process.env.DATA_DIR || "data");
 const DATA_FILE = join(DATA_DIR, "crm-state.json");
+const TELEGRAM_ALERT_STATE_FILE = join(DATA_DIR, "telegram-alert-state.json");
 const BACKUP_DIR = resolve(__dirname, process.env.BACKUP_DIR || "backups");
 const BACKUP_VERSION = "crm-backup-v1";
 const MASTER_OWNER = "GIPMANA";
@@ -85,6 +86,26 @@ const STATIC_MIME = {
 function ensureStore() {
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
   if (!existsSync(DATA_FILE)) writeFileSync(DATA_FILE, JSON.stringify(makeDefaultState(), null, 2));
+}
+
+function loadTelegramAlertState() {
+  try {
+    if (!existsSync(TELEGRAM_ALERT_STATE_FILE)) return { alerts: {} };
+    const raw = JSON.parse(readFileSync(TELEGRAM_ALERT_STATE_FILE, "utf8"));
+    const alerts = raw?.alerts && typeof raw.alerts === "object" ? raw.alerts : {};
+    return { alerts };
+  } catch {
+    return { alerts: {} };
+  }
+}
+
+function saveTelegramAlertState(nextState) {
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  const alerts = nextState?.alerts && typeof nextState.alerts === "object" ? nextState.alerts : {};
+  writeFileSync(
+    TELEGRAM_ALERT_STATE_FILE,
+    JSON.stringify({ alerts, updatedAt: new Date().toISOString() }, null, 2),
+  );
 }
 
 function ensureBackupDir() {
@@ -878,10 +899,10 @@ function buildAlertsV2(state) {
     const followup = getFollowupStatus(deal, state.followupConfig);
     if (sla?.type === "overdue") {
       entries.push({
-        key: `${deal.id}:sla:${deal.pic}`,
+        key: `${deal.pic}_${deal.id}_overdue_stage`,
         dealId: deal.id,
         owner: deal.pic,
-        type: "sla",
+        alertType: "overdue_stage",
         stage: deal.stage,
         dealStatus: deal.deal_status || "",
         stateToken: String(deal.updatedAt || ""),
@@ -890,10 +911,10 @@ function buildAlertsV2(state) {
     }
     if (meeting?.type === "overdue") {
       entries.push({
-        key: `${deal.id}:meeting:${deal.pic}`,
+        key: `${deal.pic}_${deal.id}_overdue_meeting`,
         dealId: deal.id,
         owner: deal.pic,
-        type: "meeting",
+        alertType: "overdue_meeting",
         stage: deal.stage,
         dealStatus: deal.deal_status || "",
         stateToken: String(deal.updatedAt || ""),
@@ -902,10 +923,10 @@ function buildAlertsV2(state) {
     }
     if (followup?.type === "overdue") {
       entries.push({
-        key: `${deal.id}:followup:${deal.pic}`,
+        key: `${deal.pic}_${deal.id}_missing_note`,
         dealId: deal.id,
         owner: deal.pic,
-        type: "followup",
+        alertType: "missing_note",
         stage: deal.stage,
         dealStatus: deal.deal_status || "",
         stateToken: String(deal.updatedAt || ""),
@@ -967,26 +988,31 @@ async function scanAndNotify() {
 async function scanAndNotifyV2() {
   const state = loadState();
   const alerts = buildAlertsV2(state);
-  const nextSentAlerts = { ...(state.sentAlerts || {}) };
+  const alertState = loadTelegramAlertState();
+  const nextSentAlerts = { ...(alertState.alerts || {}) };
   const activeKeys = new Set(alerts.map((alert) => alert.key));
   const dueByOwner = {};
   const now = Date.now();
   const repeatMs = ALERT_REPEAT_HOURS * 3600000;
+  let skippedByCooldown = 0;
 
   alerts.forEach((alert) => {
-    const previous = state.sentAlerts?.[alert.key];
+    const previous = nextSentAlerts[alert.key];
     const lastSentAtMs = previous?.lastSentAt ? new Date(previous.lastSentAt).getTime() : 0;
     const changedByUpdate = !!previous && previous.stateToken !== alert.stateToken;
     const passedCooldown = !!previous && Number.isFinite(lastSentAtMs) && now - lastSentAtMs >= repeatMs;
     const shouldSend = !previous || changedByUpdate || passedCooldown;
     if (!shouldSend) {
+      skippedByCooldown += 1;
+      const nextAllowedAt = Number.isFinite(lastSentAtMs) && lastSentAtMs > 0 ? new Date(lastSentAtMs + repeatMs).toISOString() : null;
       console.info("[telegram-alert] skip", {
         alertKey: alert.key,
         reason: "cooldown_active",
         owner: alert.owner,
         dealId: alert.dealId,
-        type: alert.type,
+        alertType: alert.alertType,
         lastSentAt: previous?.lastSentAt || null,
+        nextAllowedAt,
       });
       return;
     }
@@ -995,20 +1021,33 @@ async function scanAndNotifyV2() {
   });
 
   const sent = [];
+  const eligibleAlertsAfterCooldown = Object.values(dueByOwner).reduce((sum, list) => sum + list.length, 0);
+  console.info("[telegram-alert] summary", {
+    totalAlertsFound: alerts.length,
+    eligibleAlertsAfterCooldown,
+    skippedByCooldown,
+  });
   for (const [owner, ownerAlerts] of Object.entries(dueByOwner)) {
     const cfg = state.telegramConfig?.[owner];
     if (!cfg?.botToken || !cfg?.chatId || !ownerAlerts.length) continue;
     const text = `🔔 *GIP Pipeline Alert* - ${owner}\n\n${ownerAlerts.map((item) => item.text).join("\n\n")}`;
-    await sendTelegram(cfg.botToken, cfg.chatId, text);
+    let telegramOk = false;
+    try {
+      const telegramResp = await sendTelegram(cfg.botToken, cfg.chatId, text);
+      telegramOk = !!telegramResp?.ok;
+    } catch (error) {
+      console.error("[telegram-alert] send_failed", { owner, error: error?.message || "telegram_send_failed" });
+    }
+    if (!telegramOk) continue;
     const sentAt = new Date().toISOString();
     ownerAlerts.forEach((alert) => {
-      const previous = state.sentAlerts?.[alert.key];
+      const previous = nextSentAlerts[alert.key];
       const mode = !previous ? "first_send" : previous.stateToken !== alert.stateToken ? "resolved_then_realert" : "resend_after_cooldown";
       nextSentAlerts[alert.key] = {
         alertKey: alert.key,
         dealId: alert.dealId,
         owner: alert.owner,
-        alertType: alert.type,
+        alertType: alert.alertType,
         stage: alert.stage,
         dealStatus: alert.dealStatus,
         stateToken: alert.stateToken,
@@ -1020,7 +1059,7 @@ async function scanAndNotifyV2() {
         mode,
         owner: alert.owner,
         dealId: alert.dealId,
-        type: alert.type,
+        alertType: alert.alertType,
       });
     });
     sent.push({ owner, count: ownerAlerts.length });
@@ -1032,6 +1071,7 @@ async function scanAndNotifyV2() {
     delete nextSentAlerts[key];
   });
 
+  saveTelegramAlertState({ alerts: nextSentAlerts });
   state.sentAlerts = nextSentAlerts;
   state.alertLog = state.alertLog || {};
   saveState(state);
