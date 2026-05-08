@@ -991,7 +991,7 @@ function getSlaStatus(deal) {
   const max = SLA_DAYS[deal.stage];
   if (!max) return null;
   const days = daysBetween(getLatestTouchDate(deal, getStageEnteredAt(deal)), new Date().toISOString());
-  if (days > max) return { type: "overdue", label: `Qua han ${days - max}n`, days, limit: max };
+  if (days >= max) return { type: "overdue", label: `Qua han ${Math.max(0, days - max)}n`, days, limit: max };
   if (days >= max - 1) return { type: "warning", label: "Het han hom nay", days, limit: max };
   if (days >= max * 0.7) return { type: "caution", label: `Con ${max - days}n`, days, limit: max };
   return null;
@@ -1013,7 +1013,7 @@ function getFollowupStatus(deal, followupConfig) {
   const since = getLatestNoteOrStageDate(deal);
   if (!since) return null;
   const hours = Math.max(0, Math.round((Date.now() - new Date(since).getTime()) / 3600000));
-  if (hours > limit) return { type: "overdue", label: `Chua co note ${hours}h/${limit}h`, hours, limit };
+  if (hours >= limit) return { type: "overdue", label: `Chua co note ${hours}h/${limit}h`, hours, limit };
   if (hours >= Math.max(1, Math.floor(limit * 0.75))) return { type: "warning", label: `Can note trong ${limit - hours}h`, hours, limit };
   return null;
 }
@@ -1203,6 +1203,32 @@ function buildAlertsV2(state) {
     }
   }
   return entries;
+}
+
+const TELEGRAM_NEAR_ALERT_TYPES = new Set([
+  "near_sla",
+  "near_meeting",
+  "near_note",
+  "warning",
+  "upcoming",
+  "need_note_soon",
+]);
+
+const TELEGRAM_OVERDUE_ALERT_TYPES = new Set([
+  "overdue_stage",
+  "overdue_meeting",
+  "missing_note",
+  "overdue_note",
+]);
+
+function isTelegramOverdueAlert(alert) {
+  if (!alert || !alert.alertType) return false;
+  if (TELEGRAM_NEAR_ALERT_TYPES.has(alert.alertType)) return false;
+  if (alert.isOverdue === true) return true;
+  const metricValue = Number(alert.metricValue);
+  const metricLimit = Number(alert.metricLimit);
+  if (Number.isFinite(metricValue) && Number.isFinite(metricLimit) && metricValue >= metricLimit) return true;
+  return TELEGRAM_OVERDUE_ALERT_TYPES.has(alert.alertType);
 }
 
 function truncateText(value, maxLen) {
@@ -1493,12 +1519,27 @@ async function scanAndNotifyV2() {
 
 async function scanAndNotifyV3() {
   const state = loadState();
-  const alerts = buildAlertsV2(state);
+  const alertsRaw = buildAlertsV2(state);
+  let nearSlaSkipped = 0;
+  let notOverdueSkipped = 0;
+  const alerts = alertsRaw.filter((alert) => {
+    const isNear = TELEGRAM_NEAR_ALERT_TYPES.has(alert.alertType);
+    if (isNear) {
+      nearSlaSkipped += 1;
+      return false;
+    }
+    const overdue = isTelegramOverdueAlert(alert);
+    if (!overdue) {
+      notOverdueSkipped += 1;
+      return false;
+    }
+    return true;
+  });
   const groupedByOwner = alerts.reduce((acc, alert) => {
     acc[alert.owner] = (acc[alert.owner] || 0) + 1;
     return acc;
   }, {});
-  console.info("[telegram] totalCurrentAlertsFromCRM=", alerts.length);
+  console.info("[telegram] totalCurrentAlertsFromCRM=", alertsRaw.length);
   console.info("[telegram] groupedByOwner=", groupedByOwner);
 
   const alertState = loadTelegramAlertState();
@@ -1508,7 +1549,10 @@ async function scanAndNotifyV3() {
     return {
       sent: [],
       totalAlerts: alerts.length,
-      totalAlertsFound: alerts.length,
+      totalAlertsFound: alertsRaw.length,
+      nearSlaSkipped,
+      notOverdueSkipped,
+      overdueEligible: alerts.length,
       eligibleAlertsAfterCooldown: 0,
       skippedByCooldown: 0,
       skippedByGlobalLock: 1,
@@ -1626,7 +1670,10 @@ async function scanAndNotifyV3() {
   saveTelegramAlertState(alertState);
 
   console.info("[telegram] job_result", {
-    totalAlertsFound: alerts.length,
+    totalAlertsFound: alertsRaw.length,
+    nearSlaSkipped,
+    notOverdueSkipped,
+    overdueEligible: alerts.length,
     eligibleAlertsAfterCooldown,
     skippedByCooldown,
     skippedByGlobalLock: 0,
@@ -1637,7 +1684,10 @@ async function scanAndNotifyV3() {
   return {
     sent,
     totalAlerts: alerts.length,
-    totalAlertsFound: alerts.length,
+    totalAlertsFound: alertsRaw.length,
+    nearSlaSkipped,
+    notOverdueSkipped,
+    overdueEligible: alerts.length,
     eligibleAlertsAfterCooldown,
     skippedByCooldown,
     skippedByGlobalLock: 0,
