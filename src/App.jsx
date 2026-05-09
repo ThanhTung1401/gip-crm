@@ -419,8 +419,44 @@ const DEFAULT_API_BASE =
     ? "http://127.0.0.1:8787/api"
     : `${typeof window !== "undefined" ? window.location.origin : ""}/api`;
 const API_BASE = String(import.meta.env.VITE_API_BASE || DEFAULT_API_BASE).replace(/\/+$/, "");
-const normalizeLeadSourceType = (value) => (LEAD_SOURCE_TYPE_OPTIONS.includes(value) ? value : "");
-const normalizeLeadSourceDetail = (value) => (LEAD_SOURCE_DETAIL_OPTIONS.includes(value) ? value : "");
+const normalizeSourceKey = (value) =>
+  String(value || "")
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+const LEAD_SOURCE_TYPE_ALIASES = {
+  canhan: "Cá nhân",
+  personal: "Cá nhân",
+  seploki: "Sếp Loki",
+  bossloki: "Sếp Loki",
+  congty: "Công ty",
+  company: "Công ty",
+};
+const LEAD_SOURCE_DETAIL_ALIASES = {
+  facebook: "Facebook",
+  zalo: "Zalo",
+  group: "Group",
+  khachgioithieu: "Khách giới thiệu",
+  website: "Website",
+  fanpage: "Fanpage",
+  tiktok: "Tiktok",
+  khac: "Khác",
+  other: "Khác",
+};
+const normalizeLeadSourceType = (value) => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (LEAD_SOURCE_TYPE_OPTIONS.includes(text)) return text;
+  return LEAD_SOURCE_TYPE_ALIASES[normalizeSourceKey(text)] || "";
+};
+const normalizeLeadSourceDetail = (value) => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (LEAD_SOURCE_DETAIL_OPTIONS.includes(text)) return text;
+  return LEAD_SOURCE_DETAIL_ALIASES[normalizeSourceKey(text)] || "";
+};
 const normalizeMarketRegion = (value) => (MARKET_REGION_OPTIONS.includes(value) ? value : "");
 const buildLeadSource = (type, detail) => (type && detail ? `${type} - ${detail}` : detail || type || "");
 const parseLegacyLeadSource = (rawValue) => {
@@ -498,6 +534,15 @@ const apiRequest = async (path, options = {}) => {
     throw err;
   }
   return json;
+};
+
+const getUserMessageFromApiError = (message) => {
+  const code = String(message || "").trim();
+  if (code === "lead_source_type_invalid") return "Loại nguồn không hợp lệ hoặc bị thiếu. Vui lòng chọn lại Loại nguồn.";
+  if (code === "lead_source_detail_invalid") return "Nguồn chi tiết không hợp lệ. Vui lòng chọn lại.";
+  if (code === "email_invalid") return "EMAIL không đúng định dạng.";
+  if (code === "ado_invalid") return "ADO phải là số hợp lệ.";
+  return code || "Lưu không thành công, vui lòng thử lại.";
 };
 
 const downloadJsonFile = (payload, fileName) => {
@@ -3263,7 +3308,7 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
     const result = await onSave({ ...f, email, ado, lead_source_type, lead_source_detail, marketRegion, lead_source: source, source, dataInputDate: isoDate, lastMeeting: "" });
     setSaving(false);
     if (!result?.ok) {
-      window.alert(result?.error || "Lưu không thành công, vui lòng thử lại.");
+      window.alert(getUserMessageFromApiError(result?.error));
     }
   };
 

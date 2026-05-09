@@ -390,12 +390,48 @@ function isValidAdo(value) {
   return Number.isFinite(Number(normalized));
 }
 
+function normalizeSourceKey(value) {
+  return String(value || "")
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+const LEAD_SOURCE_TYPE_ALIASES = {
+  canhan: "Cá nhân",
+  personal: "Cá nhân",
+  seploki: "Sếp Loki",
+  bossloki: "Sếp Loki",
+  congty: "Công ty",
+  company: "Công ty",
+};
+
+const LEAD_SOURCE_DETAIL_ALIASES = {
+  facebook: "Facebook",
+  zalo: "Zalo",
+  group: "Group",
+  khachgioithieu: "Khách giới thiệu",
+  website: "Website",
+  fanpage: "Fanpage",
+  tiktok: "Tiktok",
+  khac: "Khác",
+  other: "Khác",
+};
+
 function normalizeLeadSourceType(value) {
-  return LEAD_SOURCE_TYPE_OPTIONS.includes(value) ? value : "";
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (LEAD_SOURCE_TYPE_OPTIONS.includes(text)) return text;
+  return LEAD_SOURCE_TYPE_ALIASES[normalizeSourceKey(text)] || "";
 }
 
 function normalizeLeadSourceDetail(value) {
-  return LEAD_SOURCE_DETAIL_OPTIONS.includes(value) ? value : "";
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (LEAD_SOURCE_DETAIL_OPTIONS.includes(text)) return text;
+  return LEAD_SOURCE_DETAIL_ALIASES[normalizeSourceKey(text)] || "";
 }
 function normalizeMarketRegion(value) {
   return MARKET_REGION_OPTIONS.includes(value) ? value : "";
@@ -423,8 +459,25 @@ function validateDealsPayload(deals) {
   for (const deal of deals) {
     if (!deal || typeof deal !== "object") throw new Error("deal_invalid");
     if (!isValidDealStatus(deal.deal_status)) throw new Error("deal_status_invalid");
-    if (deal.lead_source_type !== undefined && deal.lead_source_type !== null && deal.lead_source_type !== "" && !normalizeLeadSourceType(deal.lead_source_type)) throw new Error("lead_source_type_invalid");
-    if (deal.lead_source_detail !== undefined && deal.lead_source_detail !== null && deal.lead_source_detail !== "" && !normalizeLeadSourceDetail(deal.lead_source_detail)) throw new Error("lead_source_detail_invalid");
+    const rawSourceType = String(deal.lead_source_type ?? "").trim();
+    const rawSourceDetail = String(deal.lead_source_detail ?? "").trim();
+    const legacy = parseLegacyLeadSource(deal.lead_source || deal.source);
+    const normalizedType = normalizeLeadSourceType(rawSourceType) || legacy.lead_source_type;
+    const normalizedDetail = normalizeLeadSourceDetail(rawSourceDetail) || legacy.lead_source_detail;
+    if (rawSourceType && !normalizedType) {
+      console.warn("[validation] lead_source_type_invalid", {
+        dealId: String(deal.id || ""),
+        rawSourceType,
+      });
+      throw new Error("lead_source_type_invalid");
+    }
+    if (rawSourceDetail && !normalizedDetail) {
+      console.warn("[validation] lead_source_detail_invalid", {
+        dealId: String(deal.id || ""),
+        rawSourceDetail,
+      });
+      throw new Error("lead_source_detail_invalid");
+    }
     if (deal.marketRegion !== undefined && deal.marketRegion !== null && deal.marketRegion !== "" && !normalizeMarketRegion(deal.marketRegion)) throw new Error("market_region_invalid");
     if (!isValidEmail(normalizeEmail(deal.email))) throw new Error("email_invalid");
     if (!isValidAdo(deal.ado)) throw new Error("ado_invalid");
