@@ -2211,7 +2211,7 @@ export default function App() {
               </>
             )}
             {tab === "alerts" && <AlertView alertDeals={alertDeals} onEdit={(deal) => setModalDeal(deal)} />}
-            {tab === "report" && <ReportView deals={isMaster ? deals : visibleDeals} ownerCodes={allOwnerCodes} reportFrom={reportFrom} reportTo={reportTo} reportPIC={ownerMode || reportPIC} setReportPIC={setReportPIC} reportSearch={reportSearch} reportStage={reportStage} reportDealStatus={reportDealStatus} isMaster={isMaster} followupConfig={followupConfig} onDrilldown={handleReportDrilldown} />}
+            {tab === "report" && <ReportView deals={isMaster ? deals : visibleDeals} ownerCodes={allOwnerCodes} reportFrom={reportFrom} reportTo={reportTo} reportPIC={reportPIC} setReportPIC={setReportPIC} reportSearch={reportSearch} reportStage={reportStage} reportDealStatus={reportDealStatus} isMaster={isMaster} currentRole={effectiveRole} currentTeam={effectiveTeam} onDrilldown={handleReportDrilldown} followupConfig={followupConfig} />}
           </div>
         </div>
       </div>
@@ -2389,12 +2389,13 @@ function DealCard({ deal, cfg, isDragging, isDeleting = false, onDragStart, onDr
   );
 }
 
-function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setReportPIC, reportSearch, reportStage, reportDealStatus, isMaster, followupConfig, onDrilldown }) {
+function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setReportPIC, reportSearch, reportStage, reportDealStatus, isMaster, currentRole, currentTeam, followupConfig, onDrilldown }) {
   const [rankingSort, setRankingSort] = useState({ key: "totalDeals", direction: "desc" });
   const [expandedSourceTypes, setExpandedSourceTypes] = useState({});
   const reportPicParsed = parseTeamPicFilterValue(reportPIC);
+  const managerTeamScopeLabel = currentRole === DEFAULT_MANAGER_ROLE && currentTeam ? `${currentTeam} (TEAM)` : "";
   const reportScopeLabel = reportPicParsed.type === "all"
-    ? "Tất cả"
+    ? (managerTeamScopeLabel || "Tất cả")
     : reportPicParsed.type === "team"
       ? `${reportPicParsed.key} (TEAM)`
       : reportPicParsed.key;
@@ -2530,13 +2531,24 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
 
   const pipelineColumns = [...STAGES];
   const scopedPicFromDeals = [...new Set(scopedDeals.map((deal) => String(deal.pic || "").trim()).filter(Boolean))];
+  const managerTeamPics = currentRole === DEFAULT_MANAGER_ROLE
+    ? [...new Set(scopedDeals.filter((deal) => !currentTeam || String(deal.team || "") === currentTeam).map((deal) => String(deal.pic || "").trim()).filter(Boolean))]
+    : [];
   const visiblePicCodes = (() => {
     if (reportPicParsed.type === "pic") {
-      return reportPicParsed.key ? [reportPicParsed.key] : [];
+      if (!reportPicParsed.key) return [];
+      if (currentRole === DEFAULT_MANAGER_ROLE && managerTeamPics.length > 0 && !managerTeamPics.includes(reportPicParsed.key)) return [];
+      return [reportPicParsed.key];
     }
     if (reportPicParsed.type === "team") {
+      if (currentRole === DEFAULT_MANAGER_ROLE && currentTeam && reportPicParsed.key !== currentTeam) {
+        return managerTeamPics;
+      }
       const teamPics = [...new Set(scopedDeals.filter((deal) => String(deal.team || "") === reportPicParsed.key).map((deal) => String(deal.pic || "").trim()).filter(Boolean))];
       return teamPics;
+    }
+    if (currentRole === DEFAULT_MANAGER_ROLE) {
+      return managerTeamPics;
     }
     const merged = [...new Set([...ownerCodes, ...scopedPicFromDeals].map((pic) => String(pic || "").trim()).filter(Boolean))];
     return merged;
