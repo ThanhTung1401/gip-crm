@@ -100,6 +100,59 @@ const STATIC_MIME = {
   ".woff": "font/woff",
   ".woff2": "font/woff2",
 };
+const UNICODE_REPLACEMENT_CHAR = "\uFFFD";
+const UNICODE_GUARD_TEXT_FIELDS = ["brand", "contact", "source", "lead_source", "lead_source_detail", "marketRegion"];
+
+function hasUnicodeReplacement(value) {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.includes(UNICODE_REPLACEMENT_CHAR);
+  if (Array.isArray(value)) return value.some((item) => hasUnicodeReplacement(item));
+  if (typeof value === "object") return Object.values(value).some((item) => hasUnicodeReplacement(item));
+  return false;
+}
+
+function logUnicodeCorruption(flow, deal, field, value) {
+  if (!hasUnicodeReplacement(value)) return;
+  console.warn("[unicode-detect]", {
+    flow,
+    dealId: String(deal?.id || ""),
+    pic: String(deal?.pic || ""),
+    team: String(deal?.team || ""),
+    field,
+  });
+}
+
+function protectDealFromCorruptedOverwrite(existingDeal, incomingDeal, flow) {
+  if (!existingDeal || !incomingDeal || typeof existingDeal !== "object" || typeof incomingDeal !== "object") {
+    return incomingDeal;
+  }
+  const nextDeal = { ...incomingDeal };
+  UNICODE_GUARD_TEXT_FIELDS.forEach((field) => {
+    const incomingValue = nextDeal[field];
+    const currentValue = existingDeal[field];
+    if (hasUnicodeReplacement(incomingValue) && !hasUnicodeReplacement(currentValue) && currentValue !== undefined) {
+      nextDeal[field] = currentValue;
+      console.warn("[unicode-guard] blocked corrupted text overwrite", {
+        flow,
+        dealId: String(existingDeal?.id || incomingDeal?.id || ""),
+        field,
+      });
+    }
+  });
+  if (Array.isArray(nextDeal.notes) && Array.isArray(existingDeal.notes)) {
+    const incomingBroken = nextDeal.notes.some((note) => hasUnicodeReplacement(note?.text));
+    const existingClean = existingDeal.notes.every((note) => !hasUnicodeReplacement(note?.text));
+    if (incomingBroken && existingClean) {
+      nextDeal.notes = existingDeal.notes;
+      console.warn("[unicode-guard] blocked corrupted text overwrite", {
+        flow,
+        dealId: String(existingDeal?.id || incomingDeal?.id || ""),
+        field: "notes",
+      });
+    }
+  }
+  return nextDeal;
+}
 
 function ensureStore() {
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
@@ -626,8 +679,19 @@ async function syncFromOnline() {
   validateBackupPayload(payload);
   validateDealsPayload(payload.data.deals);
 
+  const remoteDeals = Array.isArray(payload?.data?.deals) ? payload.data.deals : [];
+  const currentDealsById = new Map((current?.deals || []).map((deal) => [String(deal?.id || ""), deal]));
+  const safeRemoteDeals = remoteDeals.map((deal) => {
+    const existing = currentDealsById.get(String(deal?.id || ""));
+    const protectedDeal = protectDealFromCorruptedOverwrite(existing, deal, "sync_from_online");
+    logUnicodeCorruption("sync_from_online", protectedDeal, "brand", protectedDeal?.brand);
+    logUnicodeCorruption("sync_from_online", protectedDeal, "contact", protectedDeal?.contact);
+    return protectedDeal;
+  });
+
   const mergedPayloadData = {
     ...payload.data,
+    deals: safeRemoteDeals,
     deletedDealTombstones: {
       ...(payload?.data?.deletedDealTombstones && typeof payload.data.deletedDealTombstones === "object" ? payload.data.deletedDealTombstones : {}),
       ...(current?.deletedDealTombstones && typeof current.deletedDealTombstones === "object" ? current.deletedDealTombstones : {}),
@@ -717,12 +781,21 @@ function filterDealsByAccess(deals, access) {
 }
 
 function mergeDealsByAccess(currentDeals, incomingDeals, access) {
-  if (access.role === MASTER_ROLE) return incomingDeals;
+  const currentById = new Map((Array.isArray(currentDeals) ? currentDeals : []).map((deal) => [String(deal?.id || ""), deal]));
+  const guardedIncoming = (Array.isArray(incomingDeals) ? incomingDeals : []).map((deal) => {
+    const existing = currentById.get(String(deal?.id || ""));
+    const protectedDeal = protectDealFromCorruptedOverwrite(existing, deal, "sync_merge");
+    logUnicodeCorruption("sync_merge", protectedDeal, "brand", protectedDeal?.brand);
+    logUnicodeCorruption("sync_merge", protectedDeal, "contact", protectedDeal?.contact);
+    logUnicodeCorruption("sync_merge", protectedDeal, "notes", protectedDeal?.notes);
+    return protectedDeal;
+  });
+  if (access.role === MASTER_ROLE) return guardedIncoming;
   const keepCurrent = currentDeals.filter((deal) => {
     if (access.role === MANAGER_ROLE) return deal.team !== access.team;
     return deal.pic !== access.owner;
   });
-  const allowedIncoming = filterDealsByAccess(incomingDeals, access);
+  const allowedIncoming = filterDealsByAccess(guardedIncoming, access);
   return [...keepCurrent, ...allowedIncoming];
 }
 
@@ -893,6 +966,9 @@ function buildDeleteTombstones(current, incoming, access, actorOwner) {
 
 function normalizeDeal(deal) {
   if (!deal || typeof deal !== "object") return null;
+  logUnicodeCorruption("normalizeDeal", deal, "brand", deal.brand);
+  logUnicodeCorruption("normalizeDeal", deal, "contact", deal.contact);
+  logUnicodeCorruption("normalizeDeal", deal, "notes", deal.notes);
   const legacySource = parseLegacyLeadSource(deal.lead_source || deal.source);
   const lead_source_type = normalizeLeadSourceType(deal.lead_source_type) || legacySource.lead_source_type;
   const lead_source_detail = normalizeLeadSourceDetail(deal.lead_source_detail) || legacySource.lead_source_detail;
@@ -1015,6 +1091,29 @@ function readBody(req) {
     });
     req.on("error", reject);
   });
+}
+
+function listUnicodeCorruptedRecords(deals) {
+  const rows = [];
+  (Array.isArray(deals) ? deals : []).forEach((deal) => {
+    if (!deal || typeof deal !== "object") return;
+    const fields = [];
+    UNICODE_GUARD_TEXT_FIELDS.forEach((field) => {
+      if (hasUnicodeReplacement(deal[field])) fields.push(field);
+    });
+    if (Array.isArray(deal.notes) && deal.notes.some((note) => hasUnicodeReplacement(note?.text))) fields.push("notes");
+    if (!fields.length) return;
+    rows.push({
+      id: String(deal.id || ""),
+      brand: String(deal.brand || ""),
+      pic: String(deal.pic || ""),
+      team: String(deal.team || ""),
+      createdAt: deal.createdAt || "",
+      updatedAt: deal.updatedAt || "",
+      fields,
+    });
+  });
+  return rows;
 }
 
 function daysBetween(a, b) {
@@ -1827,10 +1926,32 @@ async function route(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/unicode-issues") {
+    const state = loadState();
+    const records = listUnicodeCorruptedRecords(state.deals);
+    sendJson(res, 200, {
+      ok: true,
+      total: records.length,
+      records,
+    });
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/state") {
     const body = await readBody(req);
     if (body.deals !== undefined) validateDealsPayload(body.deals);
     const current = loadState();
+    const currentDealIds = new Set((current.deals || []).map((deal) => String(deal?.id || "")));
+    if (Array.isArray(body.deals)) {
+      body.deals.forEach((deal) => {
+        if (!deal || typeof deal !== "object") return;
+        const dealId = String(deal?.id || "");
+        const flow = !dealId || !currentDealIds.has(dealId) ? "manual_create_or_bulk_import" : "manual_edit_or_sync_merge";
+        logUnicodeCorruption(flow, deal, "brand", deal.brand);
+        logUnicodeCorruption(flow, deal, "contact", deal.contact);
+        logUnicodeCorruption(flow, deal, "notes", deal.notes);
+      });
+    }
     const baseUpdatedAt = typeof body.baseUpdatedAt === "string" ? body.baseUpdatedAt : "";
     if (baseUpdatedAt && current.updatedAt && baseUpdatedAt !== current.updatedAt) {
       sendJson(res, 409, {

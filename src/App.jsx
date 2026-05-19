@@ -204,6 +204,44 @@ const buildDatePresetRange = (preset) => {
   }
   return { from: toDateInputValue(fromDate), to };
 };
+const UNICODE_REPLACEMENT_CHAR = "\uFFFD";
+const hasUnicodeReplacement = (value) => {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.includes(UNICODE_REPLACEMENT_CHAR);
+  if (Array.isArray(value)) return value.some((item) => hasUnicodeReplacement(item));
+  if (typeof value === "object") return Object.values(value).some((item) => hasUnicodeReplacement(item));
+  return false;
+};
+const countUnicodeReplacementInRows = (rows) => {
+  if (!Array.isArray(rows)) return 0;
+  let count = 0;
+  rows.forEach((row) => {
+    if (row && typeof row === "object") {
+      Object.values(row).forEach((value) => {
+        if (hasUnicodeReplacement(value)) count += 1;
+      });
+    }
+  });
+  return count;
+};
+const decodeCsvWithFallback = (buffer) => {
+  const candidates = ["utf-8", "utf-8", "windows-1258", "windows-1252"];
+  let best = "";
+  let bestScore = Number.NEGATIVE_INFINITY;
+  candidates.forEach((encoding) => {
+    try {
+      const text = new TextDecoder(encoding, { fatal: false }).decode(buffer);
+      const replacementPenalty = (text.match(/\uFFFD/g) || []).length * 100;
+      const vietnameseBonus = (text.match(/[ăâđêôơưĂÂĐÊÔƠƯáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/g) || []).length;
+      const score = vietnameseBonus - replacementPenalty;
+      if (score > bestScore) {
+        best = text;
+        bestScore = score;
+      }
+    } catch {}
+  });
+  return best;
+};
 
 const getLatestTouchDate = (deal, fallbackDate = "") => {
   const notes = parseNotes(deal.notes).filter((note) => note.date);
@@ -518,7 +556,21 @@ const normalizeDeals = (rawDeals) =>
         notes: parseNotes(deal.notes),
         wonAt: resolveWonAt(deal),
         stageHistory: Array.isArray(deal.stageHistory) ? deal.stageHistory : [],
-      }))
+      })).map((deal) => {
+        if (hasUnicodeReplacement(deal.brand) || hasUnicodeReplacement(deal.contact) || hasUnicodeReplacement(deal.notes)) {
+          console.warn("[unicode-detect]", {
+            flow: "local_cache_load_or_api_fetch",
+            dealId: String(deal?.id || ""),
+            pic: String(deal?.pic || ""),
+            fields: [
+              hasUnicodeReplacement(deal.brand) ? "brand" : null,
+              hasUnicodeReplacement(deal.contact) ? "contact" : null,
+              hasUnicodeReplacement(deal.notes) ? "notes" : null,
+            ].filter(Boolean),
+          });
+        }
+        return deal;
+      })
     : [];
 
 const apiRequest = async (path, options = {}) => {
@@ -3244,9 +3296,23 @@ function ImportDealsModal({ preset, ownerMode, onDownloadTemplate, onImport, onC
     setLoading(true);
     try {
       const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: "array" });
+      let workbook;
+      if (String(file.name || "").toLowerCase().endsWith(".csv")) {
+        const csvText = decodeCsvWithFallback(buffer);
+        workbook = XLSX.read(csvText, { type: "string", raw: false });
+      } else {
+        workbook = XLSX.read(buffer, { type: "array" });
+      }
       const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(firstSheet, { defval: "" });
+      const suspiciousCount = countUnicodeReplacementInRows(rows);
+      if (suspiciousCount > 0) {
+        console.warn("[unicode-detect]", {
+          flow: "bulk_import",
+          fileName: file.name,
+          suspiciousCellCount: suspiciousCount,
+        });
+      }
       onImport(rows, preset);
     } catch {
       window.alert("Khong doc duoc file. Hay kiem tra dung dinh dang .xlsx, .xls hoac .csv.");
@@ -3303,6 +3369,7 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
     setNewNote("");
   };
   const isWin = f.stage === "Win";
+  const hasCorruptedTextInForm = hasUnicodeReplacement(f.brand) || hasUnicodeReplacement(f.contact) || hasUnicodeReplacement(f.notes);
 
   const handleSave = async () => {
     if (saving) return;
@@ -3316,8 +3383,22 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
     if (!isValidAdo(f.ado)) return window.alert("ADO phải là số.");
     const ado = normalizeAdoValue(f.ado);
     const source = buildLeadSource(lead_source_type, lead_source_detail) || String(f.source || "").trim();
+    const safeBrand = hasUnicodeReplacement(f.brand) && !hasUnicodeReplacement(deal?.brand) ? (deal?.brand || f.brand) : f.brand;
+    const safeContact = hasUnicodeReplacement(f.contact) && !hasUnicodeReplacement(deal?.contact) ? (deal?.contact || f.contact) : f.contact;
+    const safeNotes = hasUnicodeReplacement(f.notes) && !hasUnicodeReplacement(deal?.notes) ? parseNotes(deal?.notes) : f.notes;
+    if (safeBrand !== f.brand || safeContact !== f.contact || safeNotes !== f.notes) {
+      console.warn("[unicode-guard] blocked corrupted text overwrite", {
+        flow: "manual_edit",
+        dealId: String(deal?.id || ""),
+        blockedFields: [
+          safeBrand !== f.brand ? "brand" : null,
+          safeContact !== f.contact ? "contact" : null,
+          safeNotes !== f.notes ? "notes" : null,
+        ].filter(Boolean),
+      });
+    }
     setSaving(true);
-    const result = await onSave({ ...f, email, ado, lead_source_type, lead_source_detail, marketRegion, lead_source: source, source, dataInputDate: isoDate, lastMeeting: "" });
+    const result = await onSave({ ...f, brand: safeBrand, contact: safeContact, notes: safeNotes, email, ado, lead_source_type, lead_source_detail, marketRegion, lead_source: source, source, dataInputDate: isoDate, lastMeeting: "" });
     setSaving(false);
     if (!result?.ok) {
       window.alert(getUserMessageFromApiError(result?.error));
@@ -3328,6 +3409,11 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
     <Modal onClose={onClose}>
       <div style={{ width: "640px", maxWidth: "94vw" }}>
         <div style={{ fontFamily: "'Playfair Display',serif", fontSize: "18px", color: "#1a6fba", marginBottom: "18px" }}>{isNew ? "✦ Thêm Deal Mới" : "✦ Chỉnh sửa Deal"}</div>
+        {hasCorruptedTextInForm && (
+          <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "10px", padding: "10px 12px", color: "#9a3412", fontSize: "12px", marginBottom: "12px" }}>
+            Tên khách có dấu hiệu lỗi mã hóa, vui lòng kiểm tra trước khi lưu.
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "13px" }}>
           <FormBlock title="Thông tin khách">
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "13px" }}>
