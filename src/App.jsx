@@ -81,6 +81,7 @@ const FOLLOWUP_HOURS_DEFAULT = {
   Hot: 24,
   Win: 0,
 };
+const FOLLOWUP_HOURS_MAX = 8760;
 
 const STAGE_CFG = {
   "Data Thô": { icon: "🗂️", color: "#6b7c93", border: "#c8d4e0", badge: "#eef2f6", head: "#f5f7fa" },
@@ -451,6 +452,17 @@ const normalizeFollowupConfig = (raw) => {
   });
   return base;
 };
+const validateFollowupConfigInput = (raw) => {
+  const errors = [];
+  STAGES.forEach((stage) => {
+    const text = String(raw?.[stage] ?? "").trim();
+    if (!text) return;
+    const value = Number(text);
+    if (!Number.isFinite(value) || value < 0) errors.push(`${stage}: số giờ không hợp lệ`);
+    if (Number.isFinite(value) && value > FOLLOWUP_HOURS_MAX) errors.push(`${stage}: tối đa ${FOLLOWUP_HOURS_MAX}h`);
+  });
+  return errors;
+};
 
 const DEFAULT_API_BASE =
   typeof window !== "undefined" && ["127.0.0.1", "localhost"].includes(window.location.hostname)
@@ -594,6 +606,10 @@ const getUserMessageFromApiError = (message) => {
   if (code === "lead_source_detail_invalid") return "Nguồn chi tiết không hợp lệ. Vui lòng chọn lại.";
   if (code === "email_invalid") return "EMAIL không đúng định dạng.";
   if (code === "ado_invalid") return "ADO phải là số hợp lệ.";
+  if (code === "followup_config_invalid") return "Cấu hình giờ follow-up không hợp lệ. Vui lòng nhập số giờ lớn hơn hoặc bằng 0.";
+  if (code === "followup_config_too_large") return `Cấu hình giờ follow-up vượt giới hạn cho phép (${FOLLOWUP_HOURS_MAX}h).`;
+  if (code === "state_conflict") return "Dữ liệu vừa được cập nhật ở phiên khác. Hệ thống đã lấy bản mới nhất, hãy bấm lưu lại.";
+  if (code.startsWith("request_failed_") || code === "Failed to fetch") return "Backend chưa phản hồi. Kiểm tra service CRM đang chạy rồi thử lại.";
   return code || "Lưu không thành công, vui lòng thử lại.";
 };
 
@@ -1640,6 +1656,11 @@ export default function App() {
     const normalizedOwners = normalizeOwnerCodes(nextOwnerCodes);
     const normalizedAuth = normalizeAuthConfig(nextAuthConfig, normalizedOwners);
     const normalizedTelegram = normalizeTelegramConfig(nextTelegramConfig, normalizedOwners);
+    const followupErrors = validateFollowupConfigInput(nextFollowupConfig);
+    if (followupErrors.length > 0) {
+      window.alert(`Không lưu được cấu hình:\n${followupErrors.join("\n")}`);
+      return;
+    }
     const normalizedFollowup = normalizeFollowupConfig(nextFollowupConfig);
     const previousOwners = normalizeOwnerCodes(ownerCodes);
     const renameMap = Object.fromEntries(
@@ -1647,36 +1668,63 @@ export default function App() {
         .map((code, index) => [code, normalizedOwners[index]])
         .filter(([from, to]) => from && to && from !== to),
     );
+    const hasOwnerRename = Object.keys(renameMap).length > 0;
     const nextDeals = deals.map((deal) => (renameMap[deal.pic] ? { ...deal, pic: renameMap[deal.pic] } : deal));
-    if (isMaster) {
-      setOwnerCodes(normalizedOwners);
-      setAuthConfig(normalizedAuth);
-      setFollowupConfig(normalizedFollowup);
-      setDeals(nextDeals);
-    }
-    setTelegramConfig((prev) => ({
-      ...prev,
-      [currentAccount]: normalizedTelegram[currentAccount] || { botToken: "", chatId: "" },
-    }));
 
     try {
-      const result = await apiRequest("/state", {
+      const buildSettingsPayload = (baseUpdatedAtValue) => ({
+        actorOwner: currentAccount,
+        baseUpdatedAt: baseUpdatedAtValue || undefined,
+        ownerCodes: isMaster ? normalizedOwners : undefined,
+        deals: isMaster && hasOwnerRename ? nextDeals : undefined,
+        authConfig: isMaster ? normalizedAuth : undefined,
+        telegramConfig: { [currentAccount]: normalizedTelegram[currentAccount] || { botToken: "", chatId: "" } },
+        followupConfig: isMaster ? normalizedFollowup : undefined,
+      });
+      console.info("[settings] save_request", {
+        isMaster,
+        hasOwnerRename,
+        followupConfig: isMaster ? normalizedFollowup : undefined,
+        backendUpdatedAt: backendUpdatedAt || "",
+      });
+      let result = await apiRequest("/state", {
         method: "POST",
-        body: JSON.stringify({
-          actorOwner: currentAccount,
-          baseUpdatedAt: backendUpdatedAt || undefined,
-          ownerCodes: isMaster ? normalizedOwners : undefined,
-          deals: isMaster ? nextDeals : deals,
-          authConfig: isMaster ? normalizedAuth : undefined,
-          telegramConfig: { [currentAccount]: normalizedTelegram[currentAccount] || { botToken: "", chatId: "" } },
-          followupConfig: isMaster ? normalizedFollowup : undefined,
-        }),
+        body: JSON.stringify(buildSettingsPayload(backendUpdatedAt)),
+      }).catch(async (error) => {
+        if (error?.status !== 409) throw error;
+        const latest = await apiRequest(`/state?owner=${encodeURIComponent(currentAccount)}`);
+        setBackendUpdatedAt(typeof latest.updatedAt === "string" ? latest.updatedAt : "");
+        if (latest.ownerCodes) setOwnerCodes(normalizeOwnerCodes(latest.ownerCodes));
+        if (latest.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(latest.authConfig, latest.ownerCodes || ownerCodes) }));
+        if (latest.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(latest.telegramConfig, latest.ownerCodes || ownerCodes) }));
+        if (latest.followupConfig) setFollowupConfig(normalizeFollowupConfig(latest.followupConfig));
+        result = await apiRequest("/state", {
+          method: "POST",
+          body: JSON.stringify(buildSettingsPayload(latest.updatedAt || "")),
+        });
+        return result;
       });
       setBackendUpdatedAt(typeof result.updatedAt === "string" ? result.updatedAt : backendUpdatedAt);
       setBackendReady(true);
-    } catch {
+      if (isMaster) {
+        setOwnerCodes(normalizedOwners);
+        setAuthConfig(normalizedAuth);
+        setFollowupConfig(normalizedFollowup);
+        if (hasOwnerRename) setDeals(nextDeals);
+      }
+      setTelegramConfig((prev) => ({
+        ...prev,
+        [currentAccount]: normalizedTelegram[currentAccount] || { botToken: "", chatId: "" },
+      }));
+    } catch (error) {
       setBackendReady(false);
-      window.alert("Da luu cau hinh o may nay, nhung backend local chua nhan duoc. Hay bat lai CRM bang file start-crm.ps1.");
+      console.error("[settings] save_failed", {
+        message: error?.message || "unknown",
+        status: error?.status || "",
+        payload: error?.payload || null,
+      });
+      window.alert(getUserMessageFromApiError(error?.message));
+      return;
     }
 
     setShowSetup(false);
@@ -3181,9 +3229,9 @@ function Field({ label, children, span }) {
   return <div style={span ? { gridColumn: "1/-1" } : {}}><div style={{ fontSize: "10px", color: UI.muted, fontWeight: "700", letterSpacing: "0.06em", marginBottom: "6px" }}>{label.toUpperCase()}</div>{children}</div>;
 }
 
-function Inp({ value, onChange, placeholder, type = "text", multiline }) {
+function Inp({ value, onChange, placeholder, type = "text", multiline, ...rest }) {
   const base = { background: "#fff", border: `1px solid ${UI.border}`, borderRadius: "12px", padding: "10px 12px", color: UI.text, fontSize: "13px", width: "100%", outline: "none", boxSizing: "border-box", fontFamily: "inherit" };
-  return multiline ? <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={2} style={{ ...base, resize: "vertical" }} /> : <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} style={base} />;
+  return multiline ? <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={2} style={{ ...base, resize: "vertical" }} {...rest} /> : <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} style={base} {...rest} />;
 }
 
 function Modal({ children, onClose }) {
@@ -3736,7 +3784,7 @@ function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegram
               {STAGES.map((stage) => (
                 <div key={stage}>
                   <div style={{ fontSize: "11px", color: "#6080a0", marginBottom: "4px", fontWeight: "600" }}>{stage}</div>
-                  <Inp type="number" value={String(localFollowup[stage] ?? 0)} onChange={(value) => setLocalFollowup((prev) => ({ ...prev, [stage]: Number(value) >= 0 ? Number(value) : 0 }))} placeholder="Số giờ" />
+                  <Inp type="number" min="0" max={String(FOLLOWUP_HOURS_MAX)} value={String(localFollowup[stage] ?? 0)} onChange={(value) => setLocalFollowup((prev) => ({ ...prev, [stage]: value }))} placeholder="Số giờ" />
                 </div>
               ))}
             </div>

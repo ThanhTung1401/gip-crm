@@ -57,6 +57,7 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SLA_DAYS = { "Data Thô": 15, Freeze: 10, Cold: 7, Warm: 5, Hot: 3 };
 const MEETING_CADENCE = { Warm: 21, Hot: 21, Win: 30 };
 const FOLLOWUP_HOURS_DEFAULT = { "Data Thô": 100, Freeze: 72, Cold: 48, Warm: 36, Hot: 24, Win: 0 };
+const FOLLOWUP_HOURS_MAX = 8760;
 const ALERT_REPEAT_HOURS = 2;
 const TELEGRAM_MAX_MESSAGE_LENGTH = 3500;
 const TELEGRAM_LOCK_TTL_MS = 2 * 60 * 1000;
@@ -537,6 +538,23 @@ function validateDealsPayload(deals) {
   }
 }
 
+function normalizeFollowupConfig(raw) {
+  const base = { ...FOLLOWUP_HOURS_DEFAULT };
+  STAGES.forEach((stage) => {
+    const value = raw?.[stage];
+    if (value === undefined || value === null || value === "") return;
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue) || numberValue < 0) throw new Error("followup_config_invalid");
+    if (numberValue > FOLLOWUP_HOURS_MAX) throw new Error("followup_config_too_large");
+    base[stage] = numberValue;
+  });
+  return base;
+}
+
+function validateFollowupConfig(raw) {
+  normalizeFollowupConfig(raw);
+}
+
 function mirrorBackupToGoogleDriveSync(filePath, fileName) {
   if (!GOOGLE_DRIVE_SYNC_DIR) return null;
   try {
@@ -899,11 +917,7 @@ function normalizeState(raw, options = {}) {
       chatId: typeof raw?.telegramConfig?.[pic]?.chatId === "string" ? raw.telegramConfig[pic].chatId : "",
     };
   });
-  const followupConfig = { ...base.followupConfig };
-  STAGES.forEach((stage) => {
-    const value = Number(raw?.followupConfig?.[stage]);
-    if (Number.isFinite(value) && value >= 0) followupConfig[stage] = value;
-  });
+  const followupConfig = normalizeFollowupConfig(raw?.followupConfig);
   const alertLog = raw?.alertLog && typeof raw.alertLog === "object" ? raw.alertLog : {};
   const sentAlerts = raw?.sentAlerts && typeof raw.sentAlerts === "object" ? raw.sentAlerts : {};
   deals = deals.map((deal) => {
@@ -1940,6 +1954,7 @@ async function route(req, res) {
   if (req.method === "POST" && url.pathname === "/api/state") {
     const body = await readBody(req);
     if (body.deals !== undefined) validateDealsPayload(body.deals);
+    if (body.followupConfig !== undefined) validateFollowupConfig(body.followupConfig);
     const current = loadState();
     const currentDealIds = new Set((current.deals || []).map((deal) => String(deal?.id || "")));
     if (Array.isArray(body.deals)) {
@@ -2027,6 +2042,12 @@ async function route(req, res) {
       : current.telegramConfig;
     const mergedDeals = Array.isArray(body.deals) ? mergeDealsByAccess(current.deals, body.deals, access) : current.deals;
     const activeDeals = mergedDeals.filter((deal) => !nextTombstones[String(deal?.id || "")]);
+    const nextFollowupConfig = access.role === MASTER_ROLE && body.followupConfig ? normalizeFollowupConfig(body.followupConfig) : current.followupConfig;
+    console.info("[state] config_write_request", {
+      actorOwner,
+      hasFollowupConfig: body.followupConfig !== undefined,
+      followupConfig: body.followupConfig ? normalizeFollowupConfig(body.followupConfig) : undefined,
+    });
     const next = saveState({
       ...current,
       ownerCodes: nextOwnerCodes,
@@ -2034,7 +2055,7 @@ async function route(req, res) {
       deletedDealTombstones: nextTombstones,
       authConfig: mergedAuthConfig,
       telegramConfig: mergedTelegramConfig,
-      followupConfig: access.role === MASTER_ROLE && body.followupConfig ? body.followupConfig : current.followupConfig,
+      followupConfig: nextFollowupConfig,
       alertLog: current.alertLog || {},
       sentAlerts: current.sentAlerts || {},
     });
