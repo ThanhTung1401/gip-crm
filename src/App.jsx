@@ -610,6 +610,7 @@ const getUserMessageFromApiError = (message) => {
   if (code === "followup_config_too_large") return `Cấu hình giờ follow-up vượt giới hạn cho phép (${FOLLOWUP_HOURS_MAX}h).`;
   if (code === "state_conflict") return "Dữ liệu vừa được cập nhật ở phiên khác. Hệ thống đã lấy bản mới nhất, hãy bấm lưu lại.";
   if (code.startsWith("request_failed_") || code === "Failed to fetch") return "Backend chưa phản hồi. Kiểm tra service CRM đang chạy rồi thử lại.";
+  if (code.startsWith("Cannot access ") || code.includes(" before initialization")) return "Có lỗi khi lưu cấu hình. Vui lòng thử lại.";
   return code || "Lưu không thành công, vui lòng thử lại.";
 };
 
@@ -1687,7 +1688,7 @@ export default function App() {
         followupConfig: isMaster ? normalizedFollowup : undefined,
         backendUpdatedAt: backendUpdatedAt || "",
       });
-      let result = await apiRequest("/state", {
+      const result = await apiRequest("/state", {
         method: "POST",
         body: JSON.stringify(buildSettingsPayload(backendUpdatedAt)),
       }).catch(async (error) => {
@@ -1698,11 +1699,10 @@ export default function App() {
         if (latest.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(latest.authConfig, latest.ownerCodes || ownerCodes) }));
         if (latest.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(latest.telegramConfig, latest.ownerCodes || ownerCodes) }));
         if (latest.followupConfig) setFollowupConfig(normalizeFollowupConfig(latest.followupConfig));
-        result = await apiRequest("/state", {
+        return await apiRequest("/state", {
           method: "POST",
           body: JSON.stringify(buildSettingsPayload(latest.updatedAt || "")),
         });
-        return result;
       });
       setBackendUpdatedAt(typeof result.updatedAt === "string" ? result.updatedAt : backendUpdatedAt);
       setBackendReady(true);
