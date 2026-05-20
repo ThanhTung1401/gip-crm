@@ -51,13 +51,6 @@ const MARKET_REGION_FLAG = {
   "Đa quốc gia": "🌍",
 };
 
-const SLA_DAYS = {
-  "Data Thô": 15,
-  Freeze: 10,
-  Cold: 7,
-  Warm: 5,
-  Hot: 3,
-};
 const MEETING_CADENCE = { Warm: 21, Hot: 21, Win: 30 };
 const DEAL_STATUS_REPORT_KEYS = [
   { label: "Interested", key: "interested", matches: ["Interested"] },
@@ -82,6 +75,36 @@ const FOLLOWUP_HOURS_DEFAULT = {
   Win: 0,
 };
 const FOLLOWUP_HOURS_MAX = 8760;
+
+const normalizeStageName = (stage) => {
+  const raw = String(stage || "").trim();
+  if (STAGES.includes(raw)) return raw;
+  const key = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  if (key === "datatho" || key.startsWith("datath")) return "Data Thô";
+  if (key === "freeze" || key === "freezee") return "Freeze";
+  if (key === "cold") return "Cold";
+  if (key === "warm") return "Warm";
+  if (key === "hot") return "Hot";
+  if (key === "win") return "Win";
+  return raw;
+};
+
+const getStageSlaHours = (stage, followupConfig) => {
+  const normalizedStage = normalizeStageName(stage);
+  const value = Number(followupConfig?.[normalizedStage] ?? 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+};
+
+const formatSlaHours = (hours) => {
+  const value = Number(hours || 0);
+  if (!Number.isFinite(value) || value <= 0) return "—";
+  if (value % 24 === 0) return `${value / 24}n`;
+  return `${value}h`;
+};
 
 const STAGE_CFG = {
   "Data Thô": { icon: "🗂️", color: "#6b7c93", border: "#c8d4e0", badge: "#eef2f6", head: "#f5f7fa" },
@@ -259,14 +282,17 @@ const daysInStage = (deal) => {
   return daysBetween(since, new Date().toISOString());
 };
 
-const slaStatus = (deal) => {
-  if (deal.stage === "Win") return null;
-  const max = SLA_DAYS[deal.stage];
-  if (!max) return null;
-  const days = daysInStage(deal);
-  if (days > max) return { label: `Quá hạn ${days - max}n`, type: "overdue" };
-  if (days >= max - 1) return { label: "Hết hạn hôm nay", type: "warning" };
-  if (days >= max * 0.7) return { label: `Còn ${max - days}n`, type: "caution" };
+const slaStatus = (deal, followupConfig) => {
+  const stage = normalizeStageName(deal?.stage);
+  if (stage === "Win") return null;
+  const limitHours = getStageSlaHours(stage, followupConfig);
+  if (!limitHours) return null;
+  const since = getLatestTouchDate(deal, getStageEnteredAt(deal));
+  if (!since) return null;
+  const hours = Math.max(0, Math.round((new Date().getTime() - new Date(since).getTime()) / 3600000));
+  if (hours >= limitHours) return { label: `Quá hạn ${formatSlaHours(hours - limitHours)}`, type: "overdue", hours, limit: limitHours };
+  if (hours >= Math.max(0, limitHours - 24)) return { label: "Hết hạn hôm nay", type: "warning", hours, limit: limitHours };
+  if (hours >= limitHours * 0.7) return { label: `Còn ${formatSlaHours(limitHours - hours)}`, type: "caution", hours, limit: limitHours };
   return null;
 };
 
@@ -291,7 +317,7 @@ const getLatestNoteOrStageDate = (deal) => {
 };
 
 const followupStatus = (deal, followupConfig) => {
-  const limit = Number(followupConfig?.[deal.stage] || 0);
+  const limit = getStageSlaHours(deal?.stage, followupConfig);
   if (!limit) return null;
   const since = getLatestNoteOrStageDate(deal);
   if (!since) return null;
@@ -302,7 +328,7 @@ const followupStatus = (deal, followupConfig) => {
 };
 
 const getAlertPriority = (deal, followupConfig) => {
-  const sla = slaStatus(deal);
+  const sla = slaStatus(deal, followupConfig);
   const mtg = meetingStatus(deal);
   const followup = followupStatus(deal, followupConfig);
   if ((sla && sla.type === "overdue") || (mtg && mtg.type === "overdue") || (followup && followup.type === "overdue")) return "critical";
@@ -310,7 +336,7 @@ const getAlertPriority = (deal, followupConfig) => {
   return null;
 };
 const isDealCurrentlyOverdue = (deal, followupConfig) => {
-  const sla = slaStatus(deal);
+  const sla = slaStatus(deal, followupConfig);
   const mtg = meetingStatus(deal);
   const note = followupStatus(deal, followupConfig);
   return (sla && sla.type === "overdue") || (mtg && mtg.type === "overdue") || (note && note.type === "overdue");
@@ -447,7 +473,8 @@ const normalizeFollowupConfig = (raw) => {
   const base = { ...FOLLOWUP_HOURS_DEFAULT };
   if (!raw || typeof raw !== "object") return base;
   STAGES.forEach((stage) => {
-    const value = Number(raw[stage]);
+    const rawValue = raw[stage] ?? Object.entries(raw || {}).find(([key]) => normalizeStageName(key) === stage)?.[1];
+    const value = Number(rawValue);
     if (Number.isFinite(value) && value >= 0) base[stage] = value;
   });
   return base;
@@ -2008,7 +2035,7 @@ export default function App() {
   const alertDeals = filteredNoDate
     .map((deal) => ({
       deal,
-      sla: slaStatus(deal),
+      sla: slaStatus(deal, followupConfig),
       mtg: meetingStatus(deal),
       followup: followupStatus(deal, followupConfig),
       priority: getAlertPriority(deal, followupConfig),
@@ -2307,7 +2334,7 @@ export default function App() {
                     <Btn onClick={clearDrilldownContext}>Xóa lọc drill-down</Btn>
                   </div>
                 )}
-                <KanbanBoard deals={pipelineDrilldownDeals} dragOver={dragOver} setDragOver={setDragOver} draggingId={draggingId} setDraggingId={setDraggingId} moveDeal={moveDeal} onEdit={(d) => setModalDeal(d)} onDelete={deleteDeal} deletingDealIds={deletingDealIds} onAdd={(stage) => openAddOptions({ stage, pic: ownerMode || "" })} />
+                <KanbanBoard deals={pipelineDrilldownDeals} dragOver={dragOver} setDragOver={setDragOver} draggingId={draggingId} setDraggingId={setDraggingId} moveDeal={moveDeal} onEdit={(d) => setModalDeal(d)} onDelete={deleteDeal} deletingDealIds={deletingDealIds} onAdd={(stage) => openAddOptions({ stage, pic: ownerMode || "" })} followupConfig={followupConfig} />
               </>
             )}
             {tab === "alerts" && <AlertView alertDeals={alertDeals} onEdit={(deal) => setModalDeal(deal)} />}
@@ -2324,7 +2351,7 @@ export default function App() {
   );
 }
 
-function KanbanBoard({ deals, dragOver, setDragOver, draggingId, setDraggingId, moveDeal, onEdit, onDelete, deletingDealIds, onAdd }) {
+function KanbanBoard({ deals, dragOver, setDragOver, draggingId, setDraggingId, moveDeal, onEdit, onDelete, deletingDealIds, onAdd, followupConfig }) {
   return (
     <div style={{ width: "100%", overflowX: "auto", padding: 0 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(156px, 1fr))", gap: "10px", width: "100%", minWidth: "960px", alignItems: "flex-start" }}>
@@ -2334,9 +2361,11 @@ function KanbanBoard({ deals, dragOver, setDragOver, draggingId, setDraggingId, 
         const isOver = dragOver === stage;
         const rev = sd.reduce((s, d) => s + (Number(d.value) || 0), 0);
         const overdueInCol = sd.filter((d) => {
-          const sl = slaStatus(d);
+          const sl = slaStatus(d, followupConfig);
           return sl && sl.type === "overdue";
         }).length;
+        const slaHours = getStageSlaHours(stage, followupConfig);
+        const slaLabel = formatSlaHours(slaHours);
         return (
           <div
             key={stage}
@@ -2355,12 +2384,12 @@ function KanbanBoard({ deals, dragOver, setDragOver, draggingId, setDraggingId, 
                 <span title="Số lượng deal" style={{ background: cfg.badge, color: cfg.color, borderRadius: "999px", padding: "2px 7px", fontSize: "10px", fontWeight: "700", border: `1px solid ${cfg.border}`, flexShrink: 0 }}>{sd.length}</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "6px", gap: "8px" }}>
-                <span title={SLA_DAYS[stage] ? `SLA tối đa ${SLA_DAYS[stage]} ngày` : "Không có SLA"} style={{ fontSize: "10px", color: UI.muted, whiteSpace: "nowrap" }}>SLA {SLA_DAYS[stage] ? `${SLA_DAYS[stage]}n` : "—"}</span>
+                <span title={slaHours ? `SLA tối đa ${slaHours} giờ (${slaLabel})` : "Không có SLA"} style={{ fontSize: "10px", color: UI.muted, whiteSpace: "nowrap" }}>SLA {slaLabel}</span>
                 <span title="Tổng revenue stage" style={{ fontSize: "11px", color: cfg.color, fontWeight: "700", whiteSpace: "nowrap" }}>{sd.some((d) => d.value) ? `${(rev / 1e6).toFixed(1)}M` : "—"}</span>
               </div>
             </div>
             {sd.map((deal) => (
-              <DealCard key={deal.id} deal={deal} cfg={cfg} isDragging={draggingId === deal.id} isDeleting={!!deletingDealIds?.[deal.id]} onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; setDraggingId(deal.id); }} onDragEnd={() => setDraggingId(null)} onEdit={() => onEdit(deal)} onDelete={() => onDelete(deal.id)} />
+              <DealCard key={deal.id} deal={deal} cfg={cfg} followupConfig={followupConfig} isDragging={draggingId === deal.id} isDeleting={!!deletingDealIds?.[deal.id]} onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; setDraggingId(deal.id); }} onDragEnd={() => setDraggingId(null)} onEdit={() => onEdit(deal)} onDelete={() => onDelete(deal.id)} />
             ))}
             {sd.length === 0 && <div style={{ padding: "20px 0", textAlign: "center", color: isOver ? cfg.color : "#c0cfd8", fontSize: "11px" }}>{isOver ? "↓ Thả vào đây" : "Chưa có deal"}</div>}
             <button
@@ -2379,14 +2408,14 @@ function KanbanBoard({ deals, dragOver, setDragOver, draggingId, setDraggingId, 
   );
 }
 
-function DealCard({ deal, cfg, isDragging, isDeleting = false, onDragStart, onDragEnd, onEdit, onDelete }) {
+function DealCard({ deal, cfg, followupConfig, isDragging, isDeleting = false, onDragStart, onDragEnd, onEdit, onDelete }) {
   const [hover, setHover] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const platforms = Array.isArray(deal.platform) ? deal.platform : deal.platform ? [deal.platform] : [];
   const history = (Array.isArray(deal.stageHistory) ? deal.stageHistory : []).filter((h) => h.from);
   const notes = parseNotes(deal.notes);
-  const sla = slaStatus(deal);
+  const sla = slaStatus(deal, followupConfig);
   const mtg = meetingStatus(deal);
   const slaColor = sla?.type === "overdue" ? "#c0392b" : sla?.type === "warning" ? "#b86e00" : "#6b7c93";
   const mtgColor = mtg?.type === "overdue" ? "#c0392b" : "#b86e00";
@@ -3067,15 +3096,16 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
               const [from, to] = key.split("→");
               const fc = STAGE_CFG[from] || {};
               const tc = STAGE_CFG[to] || {};
-              const sla = SLA_DAYS[from];
-              const overSLA = val !== null && sla && val > sla;
+              const slaHours = getStageSlaHours(from, followupConfig || FOLLOWUP_HOURS_DEFAULT);
+              const slaDays = slaHours ? slaHours / 24 : 0;
+              const overSLA = val !== null && slaDays && val > slaDays;
               return (
                 <div key={key} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px", background: overSLA ? "#fdecea" : "#f4f8fc", borderRadius: "8px", padding: "7px 9px" }}>
                   <span style={{ fontSize: "11px", color: fc.color, fontWeight: "600" }}>{fc.icon} {from}</span>
                   <span style={{ color: "#c0cfd8", fontSize: "12px" }}>→</span>
                   <span style={{ fontSize: "11px", color: tc.color, fontWeight: "600" }}>{tc.icon} {to}</span>
                   <span style={{ marginLeft: "auto", fontSize: "12px", fontWeight: "700", color: overSLA ? "#c0392b" : val !== null ? "#1a6fba" : "#c0cfd8" }}>
-                    {hasInvalidRange ? dashNode : metricText(val, (n) => `${n}n (SLA:${sla}n)`)}
+                    {hasInvalidRange ? dashNode : metricText(val, (n) => `${n}n (SLA:${formatSlaHours(slaHours)})`)}
                   </span>
                 </div>
               );
@@ -3091,7 +3121,7 @@ function ReportView({ deals, ownerCodes, reportFrom, reportTo, reportPIC, setRep
               {overdueDeals.length === 0 ? (
                 <div style={{ color: "#c0cfd8", fontSize: "12px", textAlign: "center", padding: "20px 0" }}>Không có khách hàng quá hạn trong phạm vi hiện tại.</div>
               ) : overdueDeals.map((d) => {
-                const sl = slaStatus(d);
+                const sl = slaStatus(d, followupConfig || FOLLOWUP_HOURS_DEFAULT);
                 const cfg = STAGE_CFG[d.stage] || {};
                 return (
                   <div key={d.id} style={{ display: "flex", alignItems: "center", gap: "12px", background: "#fff5f4", borderRadius: "8px", padding: "8px 12px" }}>
@@ -3779,7 +3809,7 @@ function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegram
 
         {isMaster && (
           <div style={{ background: "#fff5f4", border: "1px solid #f0a898", borderRadius: "10px", padding: "14px", marginBottom: "14px" }}>
-            <div style={{ fontSize: "11px", color: "#c0392b", fontWeight: "700", marginBottom: "10px" }}>Giờ phải có ghi chú tiếp theo</div>
+            <div style={{ fontSize: "11px", color: "#c0392b", fontWeight: "700", marginBottom: "10px" }}>SLA theo stage (giờ)</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: "10px" }}>
               {STAGES.map((stage) => (
                 <div key={stage}>
@@ -3789,7 +3819,7 @@ function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegram
               ))}
             </div>
             <div style={{ fontSize: "11px", color: "#8f4b47", lineHeight: 1.6, marginTop: "10px" }}>
-              Nếu lead ở stage hiện tại quá số giờ này mà chưa có ghi chú mới, lead sẽ vào tab <b>Cảnh báo</b> và backend sẽ đưa vào luồng nhắc Telegram.
+              Pipeline, Cảnh báo, Báo cáo và Telegram đều dùng số giờ này làm SLA hiện tại. Ví dụ Freeze = 600h thì chỉ quá hạn sau 25 ngày.
             </div>
           </div>
         )}

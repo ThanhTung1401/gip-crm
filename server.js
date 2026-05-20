@@ -54,7 +54,6 @@ const PLATFORM_ALIASES = {
   website: "Khác",
 };
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const SLA_DAYS = { "Data Thô": 15, Freeze: 10, Cold: 7, Warm: 5, Hot: 3 };
 const MEETING_CADENCE = { Warm: 21, Hot: 21, Win: 30 };
 const FOLLOWUP_HOURS_DEFAULT = { "Data Thô": 100, Freeze: 72, Cold: 48, Warm: 36, Hot: 24, Win: 0 };
 const FOLLOWUP_HOURS_MAX = 8760;
@@ -73,6 +72,36 @@ const GOOGLE_SERVICE_ACCOUNT_KEY = (process.env.GOOGLE_SERVICE_ACCOUNT_KEY || ""
 const GOOGLE_SERVICE_ACCOUNT_JSON = (process.env.GOOGLE_SERVICE_ACCOUNT_JSON || "").trim();
 const GOOGLE_DRIVE_FOLDER_NAME = "CRM Backups";
 const BACKUP_WARN_AFTER_FAILS = Math.max(1, Number(process.env.BACKUP_WARN_AFTER_FAILS || 2));
+
+function normalizeStageName(stage) {
+  const raw = String(stage || "").trim();
+  if (STAGES.includes(raw)) return raw;
+  const key = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  if (key === "datatho" || key.startsWith("datath")) return STAGES[0];
+  if (key === "freeze" || key === "freezee") return "Freeze";
+  if (key === "cold") return "Cold";
+  if (key === "warm") return "Warm";
+  if (key === "hot") return "Hot";
+  if (key === "win") return "Win";
+  return raw;
+}
+
+function getStageSlaHours(stage, followupConfig) {
+  const normalizedStage = normalizeStageName(stage);
+  const value = Number(followupConfig?.[normalizedStage] ?? 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function formatSlaHours(hours) {
+  const value = Number(hours || 0);
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  if (value % 24 === 0) return `${value / 24}n`;
+  return `${value}h`;
+}
 const BACKUP_STALE_MINUTES = Math.max(5, Number(process.env.BACKUP_STALE_MINUTES || 90));
 const backupRuntime = {
   startedAt: new Date().toISOString(),
@@ -541,7 +570,7 @@ function validateDealsPayload(deals) {
 function normalizeFollowupConfig(raw) {
   const base = { ...FOLLOWUP_HOURS_DEFAULT };
   STAGES.forEach((stage) => {
-    const value = raw?.[stage];
+    const value = raw?.[stage] ?? Object.entries(raw || {}).find(([key]) => normalizeStageName(key) === stage)?.[1];
     if (value === undefined || value === null || value === "") return;
     const numberValue = Number(value);
     if (!Number.isFinite(numberValue) || numberValue < 0) throw new Error("followup_config_invalid");
@@ -1152,14 +1181,17 @@ function getLatestNoteOrStageDate(deal) {
   return getLatestTouchDate(deal, getStageEnteredAt(deal));
 }
 
-function getSlaStatus(deal) {
-  if (deal.stage === "Win") return null;
-  const max = SLA_DAYS[deal.stage];
-  if (!max) return null;
-  const days = daysBetween(getLatestTouchDate(deal, getStageEnteredAt(deal)), new Date().toISOString());
-  if (days >= max) return { type: "overdue", label: `Qua han ${Math.max(0, days - max)}n`, days, limit: max };
-  if (days >= max - 1) return { type: "warning", label: "Het han hom nay", days, limit: max };
-  if (days >= max * 0.7) return { type: "caution", label: `Con ${max - days}n`, days, limit: max };
+function getSlaStatus(deal, followupConfig) {
+  const stage = normalizeStageName(deal?.stage);
+  if (stage === "Win") return null;
+  const limitHours = getStageSlaHours(stage, followupConfig);
+  if (!limitHours) return null;
+  const since = getLatestTouchDate(deal, getStageEnteredAt(deal));
+  if (!since) return null;
+  const hours = Math.max(0, Math.round((Date.now() - new Date(since).getTime()) / 3600000));
+  if (hours >= limitHours) return { type: "overdue", label: `Qua han ${formatSlaHours(hours - limitHours)}`, hours, limit: limitHours };
+  if (hours >= Math.max(0, limitHours - 24)) return { type: "warning", label: "Het han hom nay", hours, limit: limitHours };
+  if (hours >= limitHours * 0.7) return { type: "caution", label: `Con ${formatSlaHours(limitHours - hours)}`, hours, limit: limitHours };
   return null;
 }
 
@@ -1174,7 +1206,7 @@ function getMeetingStatus(deal) {
 }
 
 function getFollowupStatus(deal, followupConfig) {
-  const limit = Number(followupConfig?.[deal.stage] || 0);
+  const limit = getStageSlaHours(deal?.stage, followupConfig);
   if (!limit) return null;
   const since = getLatestNoteOrStageDate(deal);
   if (!since) return null;
@@ -1185,7 +1217,7 @@ function getFollowupStatus(deal, followupConfig) {
 }
 
 function getAlertPriority(deal, followupConfig) {
-  const sla = getSlaStatus(deal);
+  const sla = getSlaStatus(deal, followupConfig);
   const meeting = getMeetingStatus(deal);
   const followup = getFollowupStatus(deal, followupConfig);
   if ((sla && sla.type === "overdue") || (meeting && meeting.type === "overdue") || (followup && followup.type === "overdue")) return "critical";
@@ -1196,7 +1228,7 @@ function getAlertPriority(deal, followupConfig) {
 function getCurrentAlerts(state) {
   return (state.deals || [])
     .map((deal) => {
-      const sla = getSlaStatus(deal);
+      const sla = getSlaStatus(deal, state.followupConfig);
       const meeting = getMeetingStatus(deal);
       const followup = getFollowupStatus(deal, state.followupConfig);
       const priority = getAlertPriority(deal, state.followupConfig);
@@ -1214,7 +1246,7 @@ function getCurrentAlerts(state) {
 function buildAlerts(state) {
   const entries = [];
   for (const deal of state.deals) {
-    const sla = getSlaStatus(deal);
+    const sla = getSlaStatus(deal, state.followupConfig);
     const meeting = getMeetingStatus(deal);
     const followup = getFollowupStatus(deal, state.followupConfig);
     if (sla?.type === "overdue") {
@@ -1226,7 +1258,7 @@ function buildAlerts(state) {
         stage: deal.stage,
         dealStatus: deal.deal_status || "",
         stateToken: String(deal.updatedAt || ""),
-        text: `⚠️ SLA QUA HAN: *${deal.brand || "Khong ten"}* dang o ${deal.stage} da ${sla.days} ngay (max ${sla.limit}n)`,
+        text: `⚠️ SLA QUA HAN: *${deal.brand || "Khong ten"}* dang o ${deal.stage} da ${sla.hours}h (SLA ${sla.limit}h)`,
       });
     }
     if (meeting?.type === "overdue") {
@@ -1275,11 +1307,11 @@ function buildAlertsV2(state) {
         stage: deal.stage,
         dealStatus: deal.deal_status || "",
         stateToken: String(deal.updatedAt || ""),
-        metricValue: sla.days,
+        metricValue: sla.hours,
         metricLimit: sla.limit,
-        metricUnit: "ngay",
+        metricUnit: "h",
         reason: `Qua han stage ${deal.stage}`,
-        text: `⚠️ SLA QUA HAN: *${deal.brand || "Khong ten"}* dang o ${deal.stage} da ${sla.days} ngay (max ${sla.limit}n)`,
+        text: `⚠️ SLA QUA HAN: *${deal.brand || "Khong ten"}* dang o ${deal.stage} da ${sla.hours}h (SLA ${sla.limit}h)`,
       });
     }
     if (sla?.type === "warning" || sla?.type === "caution") {
@@ -1292,9 +1324,9 @@ function buildAlertsV2(state) {
         stage: deal.stage,
         dealStatus: deal.deal_status || "",
         stateToken: String(deal.updatedAt || ""),
-        metricValue: sla.days,
+        metricValue: sla.hours,
         metricLimit: sla.limit,
-        metricUnit: "ngay",
+        metricUnit: "h",
         reason: sla.label || "Sap cham han SLA",
         text: `⏳ SLA CANH BAO: *${deal.brand || "Khong ten"}* (${deal.stage}) ${sla.label || ""}`,
       });
