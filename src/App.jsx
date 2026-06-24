@@ -1757,6 +1757,24 @@ export default function App() {
     setShowSetup(false);
   };
 
+  const transferDeals = async (fromPic, toPic) => {
+    if (!fromPic || !toPic || fromPic === toPic) return;
+    const confirm = window.confirm(`Chuyển toàn bộ deals của ${fromPic} sang ${toPic}?\nHành động này không thể hoàn tác trực tiếp (dùng backup để rollback nếu cần).`);
+    if (!confirm) return;
+    try {
+      const result = await apiRequest("/transfer-deals", {
+        method: "POST",
+        body: JSON.stringify({ actorOwner: currentAccount, fromPic, toPic }),
+      });
+      setBackendReady(true);
+      await loadFromBackend();
+      window.alert(`Đã chuyển ${result.transferredCount} deal từ ${fromPic} sang ${toPic}.`);
+    } catch (error) {
+      setBackendReady(false);
+      window.alert(getUserMessageFromApiError(error?.message));
+    }
+  };
+
   const testTelegram = async (owner, overrideConfig) => {
     try {
       await apiRequest("/test-telegram", {
@@ -2346,7 +2364,7 @@ export default function App() {
       {showAddOptions && <AddDealOptionsModal preset={addPreset} onSingleAdd={() => { setModalDeal({ stage: addPreset.stage || "Data Thô", pic: addPreset.pic || ownerMode || "" }); setShowAddOptions(false); }} onImport={() => { setShowImportModal(true); setShowAddOptions(false); }} onClose={() => setShowAddOptions(false)} />}
       {showImportModal && <ImportDealsModal preset={addPreset} ownerMode={ownerMode} onDownloadTemplate={exportImportTemplate} onImport={importDeals} onClose={() => setShowImportModal(false)} />}
       {modalDeal !== null && <DealModal deal={modalDeal} ownerCodes={allOwnerCodes} authConfig={authConfig} followupConfig={followupConfig} onSave={saveDeal} onClose={() => setModalDeal(null)} ownerMode={ownerMode} isMaster={isMaster} currentRole={effectiveRole} currentTeam={effectiveTeam} />}
-      {canOpenSettings && showSetup && <SetupModal currentAccount={currentAccount} isMaster={isMaster} ownerCodes={ownerCodes} authConfig={authConfig} telegramConfig={telegramConfig} followupConfig={followupConfig} backendReady={backendReady} onSave={saveSettings} onTestTelegram={testTelegram} onRunScan={runAlertScan} onDownloadBackup={downloadBackup} onRestoreBackup={restoreBackup} onSyncFromOnline={syncFromOnline} onResetFilters={resetPipelineFilters} onClose={() => setShowSetup(false)} />}
+      {canOpenSettings && showSetup && <SetupModal currentAccount={currentAccount} isMaster={isMaster} ownerCodes={ownerCodes} authConfig={authConfig} telegramConfig={telegramConfig} followupConfig={followupConfig} backendReady={backendReady} onSave={saveSettings} onTestTelegram={testTelegram} onRunScan={runAlertScan} onDownloadBackup={downloadBackup} onRestoreBackup={restoreBackup} onSyncFromOnline={syncFromOnline} onResetFilters={resetPipelineFilters} onTransferDeals={transferDeals} onClose={() => setShowSetup(false)} />}
     </div>
   );
 }
@@ -3634,12 +3652,14 @@ function DealModal({ deal, ownerCodes, authConfig, followupConfig, onSave, onClo
   );
 }
 
-function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegramConfig, followupConfig, backendReady, onSave, onTestTelegram, onRunScan, onDownloadBackup, onRestoreBackup, onSyncFromOnline, onResetFilters, onClose }) {
+function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegramConfig, followupConfig, backendReady, onSave, onTestTelegram, onRunScan, onDownloadBackup, onRestoreBackup, onSyncFromOnline, onResetFilters, onTransferDeals, onClose }) {
   const [localOwnerRows, setLocalOwnerRows] = useState(() => makeOwnerRows(ownerCodes));
   const [localAuth, setLocalAuth] = useState(() => normalizeAuthConfig(authConfig, ownerCodes));
   const [localTelegram, setLocalTelegram] = useState(() => normalizeTelegramConfig(telegramConfig, ownerCodes));
   const [localFollowup, setLocalFollowup] = useState(() => normalizeFollowupConfig(followupConfig));
   const [restoreFile, setRestoreFile] = useState(null);
+  const [transferFrom, setTransferFrom] = useState("");
+  const [transferTo, setTransferTo] = useState("");
   const localOwners = localOwnerRows.map((row) => row.code);
   const allLocalOwners = buildAllOwnerCodes(localOwners);
   const visibleTelegramOwners = isMaster ? [MASTER_OWNER] : [currentAccount];
@@ -3803,6 +3823,32 @@ function SetupModal({ currentAccount, isMaster, ownerCodes, authConfig, telegram
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "10px", gap: "8px", flexWrap: "wrap" }}>
               <div style={{ fontSize: "11px", color: "#6080a0" }}>GIPMANA là tài khoản master cố định. Bạn có thể thêm, đổi tên hoặc xoá các mã con ở đây.</div>
               <Btn onClick={() => setLocalOwnerRows((prev) => [...prev, createOwnerRow(`GIP${String(prev.length + 1).padStart(2, "0")}`)])}>+ Thêm mã con</Btn>
+            </div>
+          </div>
+        )}
+
+        {isMaster && (
+          <div style={{ background: "#f9f0ff", border: "1px solid #d0a8f0", borderRadius: "10px", padding: "14px", marginBottom: "14px" }}>
+            <div style={{ fontSize: "11px", color: "#6a1fba", fontWeight: "700", marginBottom: "10px" }}>Chuyển data giữa các user</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "10px" }}>
+              <div>
+                <div style={{ fontSize: "10px", color: "#6080a0", marginBottom: "4px", fontWeight: "600" }}>Từ user (nghỉ việc)</div>
+                <select value={transferFrom} onChange={(e) => setTransferFrom(e.target.value)} style={{ width: "100%", fontFamily: "inherit", fontSize: "12px", padding: "6px 8px", border: "1px solid #d0a8f0", borderRadius: "6px", background: "#fff" }}>
+                  <option value="">Chọn user nguồn</option>
+                  {allLocalOwners.filter((p) => p !== MASTER_OWNER).map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize: "10px", color: "#6080a0", marginBottom: "4px", fontWeight: "600" }}>Sang user (đang làm việc)</div>
+                <select value={transferTo} onChange={(e) => setTransferTo(e.target.value)} style={{ width: "100%", fontFamily: "inherit", fontSize: "12px", padding: "6px 8px", border: "1px solid #d0a8f0", borderRadius: "6px", background: "#fff" }}>
+                  <option value="">Chọn user đích</option>
+                  {allLocalOwners.filter((p) => p !== MASTER_OWNER && p !== transferFrom).map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+              <div style={{ fontSize: "11px", color: "#7a4aaf", lineHeight: 1.6 }}>Toàn bộ deals của user nguồn sẽ được gán lại cho user đích, team cũng tự cập nhật theo.</div>
+              <Btn onClick={() => { if (transferFrom && transferTo) { onTransferDeals(transferFrom, transferTo); setTransferFrom(""); setTransferTo(""); } }} disabled={!transferFrom || !transferTo} style={{ color: "#6a1fba", borderColor: "#d0a8f0", whiteSpace: "nowrap" }}>Chuyển deals</Btn>
             </div>
           </div>
         )}

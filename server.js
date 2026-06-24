@@ -2073,7 +2073,22 @@ async function route(req, res) {
         }
       : current.telegramConfig;
     const mergedDeals = Array.isArray(body.deals) ? mergeDealsByAccess(current.deals, body.deals, access) : current.deals;
-    const activeDeals = mergedDeals.filter((deal) => !nextTombstones[String(deal?.id || "")]);
+    const teamMigratedOwners = {};
+    if (access.role === MASTER_ROLE && body.authConfig) {
+      Object.keys(mergedAuthConfig).forEach((owner) => {
+        const oldTeam = current.authConfig?.[owner]?.team;
+        const newTeam = mergedAuthConfig[owner]?.team;
+        if (oldTeam && newTeam && oldTeam !== newTeam) teamMigratedOwners[owner] = newTeam;
+      });
+    }
+    const teamMigrationCount = Object.keys(teamMigratedOwners).length;
+    const dealsAfterTeamMigration = teamMigrationCount > 0
+      ? mergedDeals.map((deal) => teamMigratedOwners[deal.pic] ? { ...deal, team: teamMigratedOwners[deal.pic] } : deal)
+      : mergedDeals;
+    if (teamMigrationCount > 0) {
+      console.info("[team-migrate] auto-migrate on settings save", { migratedOwners: teamMigratedOwners });
+    }
+    const activeDeals = dealsAfterTeamMigration.filter((deal) => !nextTombstones[String(deal?.id || "")]);
     const nextFollowupConfig = access.role === MASTER_ROLE && body.followupConfig ? normalizeFollowupConfig(body.followupConfig) : current.followupConfig;
     console.info("[state] config_write_request", {
       actorOwner,
@@ -2175,6 +2190,34 @@ async function route(req, res) {
   if (req.method === "POST" && url.pathname === "/api/scan") {
     const result = await scanAndNotifyV3();
     sendJson(res, 200, { ok: true, ...result });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/transfer-deals") {
+    const body = await readBody(req);
+    const actorOwner = String(body.actorOwner || "");
+    const fromPic = String(body.fromPic || "").trim().toUpperCase();
+    const toPic = String(body.toPic || "").trim().toUpperCase();
+    const current = loadState();
+    const access = getAccessProfile(current, actorOwner);
+    if (access.role !== MASTER_ROLE) {
+      sendJson(res, 403, { ok: false, error: "forbidden" });
+      return;
+    }
+    if (!fromPic || !toPic || fromPic === toPic) {
+      sendJson(res, 400, { ok: false, error: "invalid_params" });
+      return;
+    }
+    const toTeam = current.authConfig?.[toPic]?.team || getDefaultTeamForOwner(toPic, current.ownerCodes) || "";
+    let transferredCount = 0;
+    const nextDeals = current.deals.map((deal) => {
+      if (String(deal.pic || "") !== fromPic) return deal;
+      transferredCount++;
+      return { ...deal, pic: toPic, team: toTeam || deal.team };
+    });
+    const next = saveState({ ...current, deals: nextDeals });
+    console.info("[transfer-deals] done", { actorOwner, fromPic, toPic, toTeam, transferredCount, updatedAt: next.updatedAt });
+    sendJson(res, 200, { ok: true, transferredCount, updatedAt: next.updatedAt });
     return;
   }
 
