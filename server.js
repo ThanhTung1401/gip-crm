@@ -17,7 +17,7 @@ const BACKUP_DIR = resolve(__dirname, process.env.BACKUP_DIR || "backups");
 const BACKUP_VERSION = "crm-backup-v1";
 const MASTER_OWNER = "GIPMANA";
 const DEFAULT_OWNER_CODES = ["GIP01", "GIP02", "GIP03", "GIP04", "GIP05", "GIP06"];
-const TEAM_OPTIONS = ["PKD1", "PKD2"];
+const TEAM_OPTIONS = ["PKD1", "PKD2", "PKD3"];
 const USER_ROLE = "USER";
 const MANAGER_ROLE = "MANAGER";
 const MASTER_ROLE = "MASTER";
@@ -774,7 +774,7 @@ function getDefaultTeamForOwner(pic, ownerCodes = DEFAULT_OWNER_CODES) {
   const index = normalizedOwners.indexOf(pic);
   if (index === -1) return TEAM_OPTIONS[0];
   const pivot = Math.ceil(normalizedOwners.length / TEAM_OPTIONS.length);
-  return index < pivot ? "PKD1" : "PKD2";
+  return TEAM_OPTIONS[Math.min(Math.floor(index / pivot), TEAM_OPTIONS.length - 1)];
 }
 
 function normalizeRoleValue(value, pic) {

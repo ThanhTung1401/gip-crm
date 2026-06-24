@@ -33,7 +33,7 @@ const DEAL_STATUS_OPTIONS = [
 ];
 const MASTER_OWNER = "GIPMANA";
 const DEFAULT_OWNER_CODES = ["GIP01", "GIP02", "GIP03", "GIP04", "GIP05", "GIP06"];
-const TEAM_OPTIONS = ["PKD1", "PKD2"];
+const TEAM_OPTIONS = ["PKD1", "PKD2", "PKD3"];
 const ROLE_OPTIONS = ["USER", "MANAGER", "MASTER"];
 const DEFAULT_USER_ROLE = "USER";
 const DEFAULT_MANAGER_ROLE = "MANAGER";
@@ -361,7 +361,7 @@ const getDefaultTeamForOwner = (pic, ownerCodes = DEFAULT_OWNER_CODES) => {
   const index = normalizedOwners.indexOf(pic);
   if (index === -1) return TEAM_OPTIONS[0];
   const pivot = Math.ceil(normalizedOwners.length / TEAM_OPTIONS.length);
-  return index < pivot ? "PKD1" : "PKD2";
+  return TEAM_OPTIONS[Math.min(Math.floor(index / pivot), TEAM_OPTIONS.length - 1)];
 };
 const normalizeRoleValue = (value, pic) => {
   if (pic === MASTER_OWNER) return DEFAULT_MASTER_ROLE;
