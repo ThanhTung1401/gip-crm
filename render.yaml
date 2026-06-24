@@ -21,6 +21,6 @@ services:
       - key: ENABLE_DRIVE_UPLOAD
         value: "true"
       - key: GOOGLE_DRIVE_FOLDER_ID
-        sync: false
+        value: 14q0z2_mCMN8Ia7xP0_gierkuX8MeUuR8
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
         sync: false
