@@ -1634,15 +1634,21 @@ export default function App() {
 
   const moveDeal = (id, toStage) => {
     const now = new Date().toISOString();
-    setDeals((p) =>
-      p.map((d) => {
-        if (d.id !== id || d.stage === toStage) return d;
-        const h = Array.isArray(d.stageHistory) ? [...d.stageHistory] : [];
-        h.push({ from: d.stage, to: toStage, date: now });
-        const wonAt = d.stage !== "Win" && toStage === "Win" ? now : (d.wonAt || "");
-        return { ...d, stage: toStage, wonAt, stageHistory: h, updatedAt: now };
-      }),
-    );
+    const updatedDeal = (() => {
+      const d = deals.find((d) => d.id === id);
+      if (!d || d.stage === toStage) return null;
+      const h = Array.isArray(d.stageHistory) ? [...d.stageHistory] : [];
+      h.push({ from: d.stage, to: toStage, date: now });
+      const wonAt = d.stage !== "Win" && toStage === "Win" ? now : (d.wonAt || "");
+      return { ...d, stage: toStage, wonAt, stageHistory: h, updatedAt: now };
+    })();
+    if (!updatedDeal) return;
+    setDeals((p) => p.map((d) => (d.id === id ? updatedDeal : d)));
+    saveDeal(updatedDeal).then((result) => {
+      if (result && !result.ok) {
+        window.alert(getUserMessageFromApiError(result.error) || "Chuyển stage thất bại. Vui lòng thử lại.");
+      }
+    });
   };
 
   const doSync = async (action) => {
