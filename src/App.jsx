@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import gipLogo from "../GIP - Logo-01.png";
 
@@ -1142,6 +1142,7 @@ export default function App() {
   const [reportDealStatus, setReportDealStatus] = useState("");
   const [backendReady, setBackendReady] = useState(false);
   const [backendUpdatedAt, setBackendUpdatedAt] = useState("");
+  const backendUpdatedAtRef = useRef("");
 
   const ownerMode = getOwnerFromURL();
   const allOwnerCodes = buildAllOwnerCodes(ownerCodes);
@@ -1283,16 +1284,18 @@ export default function App() {
     };
   }, [loaded, currentAccount]);
 
+  useEffect(() => { backendUpdatedAtRef.current = backendUpdatedAt; }, [backendUpdatedAt]);
+
   useEffect(() => {
     if (!loaded || !hydratedFromBackend || !isAuthenticated) return;
     setSyncState("syncing");
     const timer = window.setTimeout(async () => {
       try {
-        await apiRequest("/state", {
+        const result = await apiRequest("/state", {
           method: "POST",
           body: JSON.stringify({
             actorOwner: currentAccount,
-            baseUpdatedAt: backendUpdatedAt || undefined,
+            baseUpdatedAt: backendUpdatedAtRef.current || undefined,
             ownerCodes: canManageMasterSettings ? ownerCodes : undefined,
             deals,
             authConfig: canManageMasterSettings ? authConfig : undefined,
@@ -1300,6 +1303,10 @@ export default function App() {
             followupConfig: canManageMasterSettings ? followupConfig : undefined,
           }),
         });
+        if (typeof result?.updatedAt === "string") {
+          backendUpdatedAtRef.current = result.updatedAt;
+          setBackendUpdatedAt(result.updatedAt);
+        }
         setBackendReady(true);
         setSyncState("success");
       } catch (error) {
@@ -1311,7 +1318,9 @@ export default function App() {
             if (latest.authConfig) setAuthConfig((prev) => ({ ...prev, ...normalizeAuthConfig(latest.authConfig, latest.ownerCodes || ownerCodes) }));
             if (latest.telegramConfig) setTelegramConfig((prev) => ({ ...prev, ...normalizeTelegramConfig(latest.telegramConfig, latest.ownerCodes || ownerCodes) }));
             if (latest.followupConfig) setFollowupConfig(normalizeFollowupConfig(latest.followupConfig));
-            setBackendUpdatedAt(typeof latest.updatedAt === "string" ? latest.updatedAt : "");
+            const latestTs = typeof latest.updatedAt === "string" ? latest.updatedAt : "";
+            backendUpdatedAtRef.current = latestTs;
+            setBackendUpdatedAt(latestTs);
             setSyncState("success");
             setBackendReady(true);
             return;
@@ -1323,7 +1332,7 @@ export default function App() {
     }, 400);
 
     return () => window.clearTimeout(timer);
-  }, [ownerCodes, deals, authConfig, telegramConfig, followupConfig, loaded, hydratedFromBackend, isAuthenticated, currentAccount, canManageMasterSettings, backendUpdatedAt]);
+  }, [ownerCodes, deals, authConfig, telegramConfig, followupConfig, loaded, hydratedFromBackend, isAuthenticated, currentAccount, canManageMasterSettings]);
 
   const applyAccessDefaultsToDeal = (deal) => {
     const nextPic = effectiveRole === DEFAULT_MASTER_ROLE ? deal.pic || "" : currentAccount;
