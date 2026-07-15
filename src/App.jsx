@@ -1297,7 +1297,6 @@ export default function App() {
             actorOwner: currentAccount,
             baseUpdatedAt: backendUpdatedAtRef.current || undefined,
             ownerCodes: canManageMasterSettings ? ownerCodes : undefined,
-            deals,
             authConfig: canManageMasterSettings ? authConfig : undefined,
             telegramConfig: { [currentAccount]: telegramConfig[currentAccount] || { botToken: "", chatId: "" } },
             followupConfig: canManageMasterSettings ? followupConfig : undefined,
@@ -1332,7 +1331,7 @@ export default function App() {
     }, 400);
 
     return () => window.clearTimeout(timer);
-  }, [ownerCodes, deals, authConfig, telegramConfig, followupConfig, loaded, hydratedFromBackend, isAuthenticated, currentAccount, canManageMasterSettings]);
+  }, [ownerCodes, authConfig, telegramConfig, followupConfig, loaded, hydratedFromBackend, isAuthenticated, currentAccount, canManageMasterSettings]);
 
   const applyAccessDefaultsToDeal = (deal) => {
     const nextPic = effectiveRole === DEFAULT_MASTER_ROLE ? deal.pic || "" : currentAccount;
